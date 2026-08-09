@@ -33,11 +33,9 @@ logger = logging.getLogger("database")
 # DATABASE URL
 # =========================================================
 
-def normalize_database_url(url: str) -> str:
-    """
-    Приводит PostgreSQL URL к формату asyncpg.
-    """
-
+def normalize_database_url(
+    url: str,
+) -> str:
     if url.startswith("postgres://"):
         return url.replace(
             "postgres://",
@@ -52,12 +50,7 @@ def normalize_database_url(url: str) -> str:
             1,
         )
 
-    if url.startswith("postgresql+asyncpg://"):
-        return url
-
-    raise RuntimeError(
-        "DATABASE_URL должен быть PostgreSQL URL."
-    )
+    return url
 
 
 DATABASE_URL_ASYNC = normalize_database_url(
@@ -92,7 +85,7 @@ class Base(DeclarativeBase):
 
 
 # =========================================================
-# USERS
+# USER
 # =========================================================
 
 class UserModel(Base):
@@ -102,7 +95,6 @@ class UserModel(Base):
     id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True,
-        autoincrement=True,
     )
 
     telegram_id: Mapped[int] = mapped_column(
@@ -135,7 +127,7 @@ class UserModel(Base):
 
 
 # =========================================================
-# SIGNALS
+# SIGNAL
 # =========================================================
 
 class SignalModel(Base):
@@ -174,27 +166,16 @@ class SignalModel(Base):
         nullable=False,
     )
 
+    close_time: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+
     historical_probability: Mapped[
         float | None
     ] = mapped_column(
         Float,
         nullable=True,
-    )
-
-    entry_time: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        nullable=False,
-    )
-
-    expiry_time: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-
-    close_time: Mapped[str] = mapped_column(
-        String(64),
-        nullable=False,
     )
 
     status: Mapped[str] = mapped_column(
@@ -215,14 +196,16 @@ class SignalModel(Base):
         nullable=False,
     )
 
-    resolved_at: Mapped[datetime | None] = mapped_column(
+    resolved_at: Mapped[
+        datetime | None
+    ] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )
 
 
 # =========================================================
-# APPLICATIONS
+# APPLICATION
 # =========================================================
 
 class ApplicationModel(Base):
@@ -249,6 +232,7 @@ class ApplicationModel(Base):
     status: Mapped[str] = mapped_column(
         String(32),
         default="NEW",
+        index=True,
         nullable=False,
     )
 
@@ -260,7 +244,7 @@ class ApplicationModel(Base):
 
 
 # =========================================================
-# DATABASE INITIALIZATION
+# INIT / CLOSE
 # =========================================================
 
 async def init_database() -> None:
@@ -272,7 +256,7 @@ async def init_database() -> None:
         )
 
     logger.info(
-        "Database initialized successfully."
+        "Database initialized."
     )
 
 
@@ -288,6 +272,52 @@ async def close_database() -> None:
 # =========================================================
 # USERS
 # =========================================================
+
+async def upsert_user(
+    telegram_id: int,
+    username: str | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+) -> UserModel:
+
+    async with SessionLocal() as session:
+
+        result = await session.execute(
+            select(UserModel).where(
+                UserModel.telegram_id == telegram_id
+            )
+        )
+
+        user = result.scalar_one_or_none()
+
+        if user is None:
+
+            user = UserModel(
+                telegram_id=telegram_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+            )
+
+            session.add(user)
+
+        else:
+
+            if username is not None:
+                user.username = username
+
+            if first_name is not None:
+                user.first_name = first_name
+
+            if last_name is not None:
+                user.last_name = last_name
+
+        await session.commit()
+
+        await session.refresh(user)
+
+        return user
+
 
 async def get_or_create_user(
     telegram_id: int,
@@ -320,49 +350,27 @@ async def get_or_create_user(
             await session.commit()
             await session.refresh(user)
 
-            logger.info(
-                "Created user %s",
-                telegram_id,
-            )
-
             return user
 
         changed = False
 
-        if username is not None:
-            if user.username != username:
-                user.username = username
-                changed = True
+        if username is not None and user.username != username:
+            user.username = username
+            changed = True
 
-        if first_name is not None:
-            if user.first_name != first_name:
-                user.first_name = first_name
-                changed = True
+        if first_name is not None and user.first_name != first_name:
+            user.first_name = first_name
+            changed = True
 
-        if last_name is not None:
-            if user.last_name != last_name:
-                user.last_name = last_name
-                changed = True
+        if last_name is not None and user.last_name != last_name:
+            user.last_name = last_name
+            changed = True
 
         if changed:
             await session.commit()
+            await session.refresh(user)
 
         return user
-
-
-async def upsert_user(
-    telegram_id: int,
-    username: str | None = None,
-    first_name: str | None = None,
-    last_name: str | None = None,
-) -> UserModel:
-
-    return await get_or_create_user(
-        telegram_id=telegram_id,
-        username=username,
-        first_name=first_name,
-        last_name=last_name,
-    )
 
 
 async def get_active_users() -> list[int]:
@@ -372,6 +380,8 @@ async def get_active_users() -> list[int]:
         result = await session.execute(
             select(
                 UserModel.telegram_id
+            ).order_by(
+                UserModel.id.asc()
             )
         )
 
@@ -382,41 +392,7 @@ async def get_active_users() -> list[int]:
 
 
 # =========================================================
-# APPLICATIONS
-# =========================================================
-
-async def create_application(
-    telegram_id: int,
-    text: str,
-) -> int:
-
-    async with SessionLocal() as session:
-
-        application = ApplicationModel(
-            telegram_id=telegram_id,
-            text=text,
-            status="NEW",
-        )
-
-        session.add(application)
-
-        await session.flush()
-
-        application_id = application.id
-
-        await session.commit()
-
-        logger.info(
-            "Application #%s created by %s",
-            application_id,
-            telegram_id,
-        )
-
-        return application_id
-
-
-# =========================================================
-# SIGNAL CREATION
+# SIGNALS
 # =========================================================
 
 async def save_signal(
@@ -426,8 +402,6 @@ async def save_signal(
     close_time: str,
     historical_probability: float | None = None,
     entry_price: float | None = None,
-    entry_time: datetime | None = None,
-    expiry_time: datetime | None = None,
 ) -> int:
 
     async with SessionLocal() as session:
@@ -435,17 +409,12 @@ async def save_signal(
         signal = SignalModel(
             symbol=symbol,
             direction=direction,
-            score=float(score),
+            score=score,
             close_time=close_time,
             historical_probability=(
                 historical_probability
             ),
             entry_price=entry_price,
-            entry_time=(
-                entry_time
-                or datetime.now(timezone.utc)
-            ),
-            expiry_time=expiry_time,
             status="PENDING",
         )
 
@@ -457,19 +426,8 @@ async def save_signal(
 
         await session.commit()
 
-        logger.info(
-            "Saved signal #%s: %s %s",
-            signal_id,
-            symbol,
-            direction,
-        )
-
         return signal_id
 
-
-# =========================================================
-# SIGNAL GETTERS
-# =========================================================
 
 async def get_signal(
     signal_id: int,
@@ -501,9 +459,7 @@ async def get_latest_signal() -> SignalModel | None:
         return result.scalar_one_or_none()
 
 
-async def get_latest_pending_signal() -> (
-    SignalModel | None
-):
+async def get_latest_pending_signal() -> SignalModel | None:
 
     async with SessionLocal() as session:
 
@@ -521,9 +477,7 @@ async def get_latest_pending_signal() -> (
         return result.scalar_one_or_none()
 
 
-async def get_pending_signals() -> list[
-    SignalModel
-]:
+async def get_pending_signals() -> list[SignalModel]:
 
     async with SessionLocal() as session:
 
@@ -541,10 +495,6 @@ async def get_pending_signals() -> list[
             result.scalars().all()
         )
 
-
-# =========================================================
-# SIGNAL RESULT
-# =========================================================
 
 async def update_signal_result(
     signal_id: int,
@@ -568,27 +518,23 @@ async def update_signal_result(
 
         signal.status = status
 
-        signal.exit_price = exit_price
+        if exit_price is not None:
+            signal.exit_price = exit_price
 
-        signal.result_reason = reason
+        if reason is not None:
+            signal.result_reason = reason
 
-        signal.resolved_at = (
-            datetime.now(timezone.utc)
+        signal.resolved_at = datetime.now(
+            timezone.utc
         )
 
         await session.commit()
-
-        logger.info(
-            "Signal #%s resolved as %s",
-            signal_id,
-            status,
-        )
 
         return True
 
 
 # =========================================================
-# STATISTICS
+# SIGNAL STATISTICS
 # =========================================================
 
 async def get_signal_statistics() -> dict[str, Any]:
@@ -650,31 +596,130 @@ async def get_signal_statistics() -> dict[str, Any]:
         "pending": pending,
         "cancelled": cancelled,
         "finished": finished,
-        "win_rate": win_rate,
         "winrate": win_rate,
+        "win_rate": win_rate,
     }
 
 
 # =========================================================
-# DEBUG / HEALTH
+# APPLICATIONS
 # =========================================================
 
-async def database_health_check() -> bool:
+async def create_application(
+    telegram_id: int,
+    text: str,
+) -> int:
 
-    try:
+    async with SessionLocal() as session:
 
-        async with SessionLocal() as session:
+        application = ApplicationModel(
+            telegram_id=telegram_id,
+            text=text,
+            status="NEW",
+        )
 
-            await session.execute(
-                select(1)
+        session.add(application)
+
+        await session.flush()
+
+        application_id = application.id
+
+        await session.commit()
+
+        return application_id
+
+
+async def get_application(
+    application_id: int,
+) -> ApplicationModel | None:
+
+    async with SessionLocal() as session:
+
+        result = await session.execute(
+            select(ApplicationModel).where(
+                ApplicationModel.id
+                == application_id
             )
+        )
+
+        return result.scalar_one_or_none()
+
+
+async def get_new_applications() -> list[
+    ApplicationModel
+]:
+
+    async with SessionLocal() as session:
+
+        result = await session.execute(
+            select(ApplicationModel)
+            .where(
+                ApplicationModel.status
+                == "NEW"
+            )
+            .order_by(
+                ApplicationModel.created_at.asc()
+            )
+        )
+
+        return list(
+            result.scalars().all()
+        )
+
+
+async def update_application_status(
+    application_id: int,
+    status: str,
+) -> bool:
+
+    async with SessionLocal() as session:
+
+        result = await session.execute(
+            select(ApplicationModel).where(
+                ApplicationModel.id
+                == application_id
+            )
+        )
+
+        application = (
+            result.scalar_one_or_none()
+        )
+
+        if application is None:
+            return False
+
+        application.status = status
+
+        await session.commit()
 
         return True
 
-    except Exception:
 
-        logger.exception(
-            "Database health check failed."
-        )
+# =========================================================
+# EXPORTS
+# =========================================================
 
-        return False
+__all__ = [
+    "Base",
+    "UserModel",
+    "SignalModel",
+    "ApplicationModel",
+    "SessionLocal",
+    "engine",
+    "init_database",
+    "close_database",
+    "upsert_user",
+    "get_or_create_user",
+    "get_active_users",
+    "save_signal",
+    "get_signal",
+    "get_latest_signal",
+    "get_latest_pending_signal",
+    "get_pending_signals",
+    "update_signal_result",
+    "get_signal_statistics",
+    "create_application",
+    "get_application",
+    "get_new_applications",
+    "update_application_status",
+]
