@@ -1,20 +1,14 @@
 from __future__ import annotations
-
 from enum import Enum
-
-
 class Direction(str, Enum):
     UP = "UP"
     DOWN = "DOWN"
-
-
 class SignalStatus(str, Enum):
     PENDING = "PENDING"
-    WIN = "WIN"
-    LOSS = "LOSS"
-    VOID = "VOID"
-
-
-class UserStatus(str, Enum):
+    WON = "WON"
+    LOST = "LOST"
+    CANCELLED = "CANCELLED"
+class SignalStage(str, Enum):
+    WARNING = "WARNING"
     ACTIVE = "ACTIVE"
-    BLOCKED = "BLOCKED"
+    FINISHED = "FINISHED"
