@@ -3,9 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from market import Candle
-from signal_engine import (
-    signal_engine,
-)
+from signal_engine import signal_engine
 
 
 @dataclass(slots=True)
@@ -13,9 +11,7 @@ class BacktestResult:
     total: int
     wins: int
     losses: int
-
     winrate: float
-
     skipped: int
 
 
@@ -58,13 +54,13 @@ def run_backtest(
             skipped += 1
             continue
 
-        entry = (
-            candles[index].close
-        )
+        entry = candles[
+            index
+        ].close
 
-        exit_price = (
-            candles[index + 1].close
-        )
+        exit_price = candles[
+            index + 1
+        ].close
 
         if analysis.direction.value == "UP":
 
@@ -73,10 +69,7 @@ def run_backtest(
             else:
                 losses += 1
 
-        elif (
-            analysis.direction.value
-            == "DOWN"
-        ):
+        elif analysis.direction.value == "DOWN":
 
             if exit_price < entry:
                 wins += 1
