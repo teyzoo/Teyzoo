@@ -1,385 +1,221 @@
 from __future__ import annotations
-
+import logging
 from dataclasses import dataclass
-
-
+from database import (
+    get_completed_signals,
+)
+logger = logging.getLogger(
+    "probability"
+)
 # ============================================================
-# НАСТРОЙКИ
+# BUCKET
 # ============================================================
-
-# Минимальное количество исторических наблюдений
-# внутри одного диапазона score.
-MINIMUM_BUCKET_SAMPLES = 100
-
-# Дополнительный запас для сглаживания.
-#
-# Это НЕ делает прогноз точнее само по себе.
-# Он лишь не позволяет маленькой выборке
-# превращаться в фальшивые 100%.
-SMOOTHING_PRIOR = 10
-
-
-# ============================================================
-# PROBABILITY BUCKET
-# ============================================================
-
 @dataclass(slots=True)
 class ProbabilityBucket:
-
     minimum_score: float
-
     maximum_score: float
-
     total: int = 0
-
     wins: int = 0
-
+    losses: int = 0
     probability: float = 0.0
-
-    @property
-    def losses(self) -> int:
-
-        return max(
-            0,
-            self.total - self.wins,
-        )
-
-    @property
-    def reliable(self) -> bool:
-
-        return (
-            self.total
-            >= MINIMUM_BUCKET_SAMPLES
-        )
-
-
-# ============================================================
-# PROBABILITY RESULT
-# ============================================================
-
-@dataclass(slots=True)
-class ProbabilityResult:
-
-    probability: float | None
-
-    total_samples: int
-
-    wins: int
-
-    losses: int
-
-    reliable: bool
-
-    minimum_samples: int
-
-
 # ============================================================
 # CALIBRATOR
 # ============================================================
-
 class ProbabilityCalibrator:
-
-    def __init__(self):
-
+    """
+    Исторический калибратор сигналов.
+    ВАЖНО:
+    Мы НЕ считаем Quality Score настоящей
+    вероятностью выигрыша.
+    Например:
+        Quality Score = 90%
+    НЕ означает:
+        вероятность выигрыша = 90%.
+    Здесь вероятность рассчитывается
+    исключительно по завершённым сделкам
+    из базы данных.
+    Например:
+        87 побед
+        13 поражений
+    =
+        87 / 100 * 100
+        = 87%
+    """
+    def __init__(
+        self,
+        minimum_history: int = 100,
+    ):
+        self.minimum_history = (
+            minimum_history
+        )
         self.buckets = [
-
             ProbabilityBucket(
-                minimum_score=0,
-                maximum_score=50,
+                minimum_score=50.0,
+                maximum_score=60.0,
             ),
-
             ProbabilityBucket(
-                minimum_score=50,
-                maximum_score=60,
+                minimum_score=60.0,
+                maximum_score=70.0,
             ),
-
             ProbabilityBucket(
-                minimum_score=60,
-                maximum_score=70,
+                minimum_score=70.0,
+                maximum_score=80.0,
             ),
-
             ProbabilityBucket(
-                minimum_score=70,
-                maximum_score=80,
+                minimum_score=80.0,
+                maximum_score=90.0,
             ),
-
             ProbabilityBucket(
-                minimum_score=80,
-                maximum_score=90,
-            ),
-
-            ProbabilityBucket(
-                minimum_score=90,
-                maximum_score=100.000001,
+                minimum_score=90.0,
+                maximum_score=101.0,
             ),
         ]
-
     # ========================================================
     # FIND BUCKET
     # ========================================================
-
     def _find_bucket(
         self,
         score: float,
     ) -> ProbabilityBucket | None:
-
-        if score < 0:
-
-            return None
-
-        if score > 100:
-
-            return None
-
         for bucket in self.buckets:
-
             if (
                 bucket.minimum_score
                 <= score
                 < bucket.maximum_score
             ):
-
                 return bucket
-
         return None
-
+    # ========================================================
+    # RESET
+    # ========================================================
+    def reset(self):
+        for bucket in self.buckets:
+            bucket.total = 0
+            bucket.wins = 0
+            bucket.losses = 0
+            bucket.probability = 0.0
     # ========================================================
     # ADD RESULT
     # ========================================================
-
     def add_result(
         self,
         score: float,
         won: bool,
-    ) -> None:
-
+    ):
         bucket = self._find_bucket(
             score
         )
-
         if bucket is None:
-
             return
-
         bucket.total += 1
-
         if won:
-
             bucket.wins += 1
-
+        else:
+            bucket.losses += 1
         bucket.probability = (
             bucket.wins
             / bucket.total
-            * 100.0
+            * 100
         )
-
     # ========================================================
-    # ADD MANY RESULTS
+    # LOAD DATABASE HISTORY
     # ========================================================
-
-    def add_results(
+    async def refresh(
         self,
-        results: list[
-            tuple[float, bool]
-        ],
-    ) -> None:
-
-        for score, won in results:
-
-            self.add_result(
-                score=score,
-                won=won,
+        limit: int = 10000,
+    ):
+        logger.info(
+            "Refreshing probability "
+            "calibration from database..."
+        )
+        self.reset()
+        try:
+            signals = (
+                await get_completed_signals(
+                    limit=limit
+                )
             )
-
-    # ========================================================
-    # RAW PROBABILITY
-    # ========================================================
-
-    def get_raw_probability(
-        self,
-        score: float,
-    ) -> float | None:
-
-        bucket = self._find_bucket(
-            score
-        )
-
-        if bucket is None:
-
-            return None
-
-        if bucket.total == 0:
-
-            return None
-
-        return (
-            bucket.wins
-            / bucket.total
-            * 100.0
-        )
-
-    # ========================================================
-    # SMOOTHED PROBABILITY
-    # ========================================================
-
-    def get_smoothed_probability(
-        self,
-        score: float,
-    ) -> float | None:
-
-        bucket = self._find_bucket(
-            score
-        )
-
-        if bucket is None:
-
-            return None
-
-        if bucket.total == 0:
-
-            return None
-
-        # ----------------------------------------------------
-        # Сглаживание.
-        #
-        # Используем нейтральный prior 50/50.
-        # ----------------------------------------------------
-
-        prior_wins = (
-            SMOOTHING_PRIOR
-            * 0.5
-        )
-
-        prior_total = (
-            SMOOTHING_PRIOR
-        )
-
-        probability = (
-            (
-                bucket.wins
-                + prior_wins
+        except Exception:
+            logger.exception(
+                "Could not load completed "
+                "signals."
             )
-            /
-            (
-                bucket.total
-                + prior_total
-            )
-            * 100.0
+            return
+        for signal in signals:
+            if signal.score is None:
+                continue
+            if signal.status == "WIN":
+                self.add_result(
+                    score=float(
+                        signal.score
+                    ),
+                    won=True,
+                )
+            elif signal.status == "LOSS":
+                self.add_result(
+                    score=float(
+                        signal.score
+                    ),
+                    won=False,
+                )
+        logger.info(
+            "Probability calibration "
+            "refreshed. Signals: %s",
+            len(signals),
         )
-
-        return probability
-
-    # ========================================================
-    # PUBLIC RESULT
-    # ========================================================
-
-    def get_result(
-        self,
-        score: float,
-    ) -> ProbabilityResult:
-
-        bucket = self._find_bucket(
-            score
-        )
-
-        if bucket is None:
-
-            return ProbabilityResult(
-                probability=None,
-                total_samples=0,
-                wins=0,
-                losses=0,
-                reliable=False,
-                minimum_samples=(
-                    MINIMUM_BUCKET_SAMPLES
-                ),
+        for bucket in self.buckets:
+            logger.info(
+                "Bucket %.0f-%.0f: "
+                "total=%s wins=%s losses=%s "
+                "probability=%.2f%%",
+                bucket.minimum_score,
+                bucket.maximum_score,
+                bucket.total,
+                bucket.wins,
+                bucket.losses,
+                bucket.probability,
             )
-
-        if bucket.total == 0:
-
-            return ProbabilityResult(
-                probability=None,
-                total_samples=0,
-                wins=0,
-                losses=0,
-                reliable=False,
-                minimum_samples=(
-                    MINIMUM_BUCKET_SAMPLES
-                ),
-            )
-
-        # ----------------------------------------------------
-        # Недостаточная выборка
-        # ----------------------------------------------------
-
-        if (
-            bucket.total
-            < MINIMUM_BUCKET_SAMPLES
-        ):
-
-            return ProbabilityResult(
-                probability=None,
-                total_samples=(
-                    bucket.total
-                ),
-                wins=bucket.wins,
-                losses=bucket.losses,
-                reliable=False,
-                minimum_samples=(
-                    MINIMUM_BUCKET_SAMPLES
-                ),
-            )
-
-        probability = (
-            self.get_smoothed_probability(
-                score
-            )
-        )
-
-        return ProbabilityResult(
-            probability=probability,
-            total_samples=(
-                bucket.total
-            ),
-            wins=bucket.wins,
-            losses=bucket.losses,
-            reliable=True,
-            minimum_samples=(
-                MINIMUM_BUCKET_SAMPLES
-            ),
-        )
-
     # ========================================================
-    # COMPATIBILITY METHOD
+    # PROBABILITY
     # ========================================================
-
     def get_probability(
         self,
         score: float,
     ) -> float | None:
-
-        result = self.get_result(
+        bucket = self._find_bucket(
             score
         )
-
-        if not result.reliable:
-
+        if bucket is None:
             return None
-
-        return result.probability
-
+        #
+        # Пока истории мало —
+        # НЕ выдаём пользователю
+        # выдуманную вероятность.
+        #
+        if (
+            bucket.total
+            < self.minimum_history
+        ):
+            return None
+        return bucket.probability
     # ========================================================
-    # BUCKET STATISTICS
+    # BUCKET INFORMATION
     # ========================================================
-
-    def get_bucket_statistics(
+    def get_bucket(
+        self,
+        score: float,
+    ) -> ProbabilityBucket | None:
+        return self._find_bucket(
+            score
+        )
+    # ========================================================
+    # STATISTICS
+    # ========================================================
+    def get_statistics(
         self,
     ) -> list[dict]:
-
         result = []
-
         for bucket in self.buckets:
-
             result.append(
                 {
                     "minimum_score": (
@@ -399,36 +235,38 @@ class ProbabilityCalibrator:
                     ),
                     "probability": (
                         bucket.probability
-                        if bucket.total
-                        else None
                     ),
-                    "reliable": (
-                        bucket.reliable
+                    "enough_history": (
+                        bucket.total
+                        >= self.minimum_history
                     ),
                 }
             )
-
         return result
-
-    # ========================================================
-    # RESET
-    # ========================================================
-
-    def reset(self) -> None:
-
-        for bucket in self.buckets:
-
-            bucket.total = 0
-
-            bucket.wins = 0
-
-            bucket.probability = 0.0
-
-
 # ============================================================
-# SINGLETON
+# GLOBAL CALIBRATOR
 # ============================================================
-
 probability_calibrator = (
-    ProbabilityCalibrator()
+    ProbabilityCalibrator(
+        minimum_history=100
+    )
 )
+# ============================================================
+# INITIALIZATION
+# ============================================================
+async def initialize_probability():
+    """
+    Загружает исторические результаты
+    из PostgreSQL при запуске приложения.
+    """
+    await probability_calibrator.refresh()
+# ============================================================
+# REFRESH
+# ============================================================
+async def refresh_probability():
+    """
+    Повторно загружает статистику.
+    Вызывается после появления новых
+    завершённых сигналов.
+    """
+    await probability_calibrator.refresh()
