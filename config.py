@@ -3,114 +3,186 @@ from __future__ import annotations
 import os
 
 
-def get_env(name: str, default: str | None = None) -> str | None:
-    value = os.getenv(name)
+# ============================================================
+# TELEGRAM
+# ============================================================
 
-    if value is None:
-        return default
-
-    value = value.strip()
-
-    return value if value else default
-
-
-BOT_TOKEN = get_env("BOT_TOKEN")
-
-if not BOT_TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN не найден в Environment Variables."
-    )
+BOT_TOKEN = os.getenv(
+    "BOT_TOKEN",
+    "",
+).strip()
 
 
-HOST = get_env(
+# ============================================================
+# SERVER
+# ============================================================
+
+HOST = os.getenv(
     "HOST",
     "0.0.0.0",
-) or "0.0.0.0"
+).strip()
 
 
-PORT = int(
-    get_env(
-        "PORT",
-        "10000",
+try:
+
+    PORT = int(
+        os.getenv(
+            "PORT",
+            "10000",
+        )
     )
-    or "10000"
-)
+
+except ValueError:
+
+    PORT = 10000
 
 
-DATABASE_URL = get_env(
+# ============================================================
+# DATABASE
+# ============================================================
+
+DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "sqlite+aiosqlite:///./teyzus.db",
-)
+    "",
+).strip()
 
 
-MARKET_API_URL = get_env(
+# ============================================================
+# MARKET API
+# ============================================================
+
+MARKET_API_URL = os.getenv(
     "MARKET_API_URL",
-)
+    "",
+).strip()
 
 
-MARKET_API_KEY = get_env(
+MARKET_API_KEY = os.getenv(
     "MARKET_API_KEY",
-)
+    "",
+).strip()
 
 
-ADMIN_IDS_RAW = get_env(
+# ============================================================
+# ADMIN
+# ============================================================
+
+ADMIN_IDS_RAW = os.getenv(
     "ADMIN_IDS",
     "",
-) or ""
+).strip()
 
 
-ADMIN_IDS: set[int] = set()
-
-for value in ADMIN_IDS_RAW.split(","):
-
-    value = value.strip()
+def parse_admin_ids(
+    value: str,
+) -> list[int]:
 
     if not value:
-        continue
+        return []
 
-    try:
-        ADMIN_IDS.add(int(value))
-    except ValueError:
-        continue
+    result: list[int] = []
+
+    for item in value.split(","):
+
+        item = item.strip()
+
+        if not item:
+            continue
+
+        try:
+
+            result.append(
+                int(item)
+            )
+
+        except ValueError:
+
+            continue
+
+    return result
 
 
-SIGNAL_INTERVAL_MINUTES = int(
-    get_env(
-        "SIGNAL_INTERVAL_MINUTES",
-        "20",
-    )
-    or "20"
+ADMIN_IDS = parse_admin_ids(
+    ADMIN_IDS_RAW
 )
 
 
-WARNING_MINUTES = int(
-    get_env(
-        "WARNING_MINUTES",
-        "2",
-    )
-    or "2"
-)
+# ============================================================
+# TIMEZONE
+# ============================================================
 
+TIMEZONE = os.getenv(
+    "TIMEZONE",
+    "Europe/Moscow",
+).strip()
+
+
+# ============================================================
+# SIGNAL SETTINGS
+# ============================================================
 
 MIN_SIGNAL_SCORE = float(
-    get_env(
+    os.getenv(
         "MIN_SIGNAL_SCORE",
         "85",
     )
-    or "85"
 )
 
-
-MIN_HISTORICAL_PROBABILITY = float(
-    get_env(
-        "MIN_HISTORICAL_PROBABILITY",
+MINIMUM_PROBABILITY = float(
+    os.getenv(
+        "MINIMUM_PROBABILITY",
         "70",
     )
-    or "70"
 )
 
 
-TIMEZONE = get_env(
-    "TIMEZONE",
-    "Europe/Moscow",
-) or "Europe/Moscow"
+# ============================================================
+# RESULT CHECKER
+# ============================================================
+
+RESULT_CHECK_INTERVAL = int(
+    os.getenv(
+        "RESULT_CHECK_INTERVAL",
+        "5",
+    )
+)
+
+
+# ============================================================
+# VALIDATION
+# ============================================================
+
+def validate_config():
+    """
+    Проверяет критические настройки.
+    """
+
+    errors: list[str] = []
+
+    if not BOT_TOKEN:
+
+        errors.append(
+            "BOT_TOKEN не задан."
+        )
+
+    if not DATABASE_URL:
+
+        errors.append(
+            "DATABASE_URL не задан."
+        )
+
+    if not MARKET_API_URL:
+
+        errors.append(
+            "MARKET_API_URL не задан."
+        )
+
+    if errors:
+
+        raise RuntimeError(
+            "Ошибки конфигурации:\n"
+            + "\n".join(
+                f"- {error}"
+                for error in errors
+            )
+        )
