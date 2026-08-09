@@ -1,63 +1,70 @@
+from __future__ import annotations
 import os
-
-from dotenv import load_dotenv
-
-
-load_dotenv()
-
-
-def get_int(name: str, default: int = 0) -> int:
+def get_required_env(name: str) -> str:
     value = os.getenv(name)
-
-    if value is None or value.strip() == "":
-        return default
-
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
-ADMIN_ID = get_int("ADMIN_ID", 0)
-
-HOST = os.getenv("HOST", "0.0.0.0")
-PORT = get_int("PORT", 10000)
-
-TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
-
-SIGNAL_INTERVAL_MINUTES = get_int(
-    "SIGNAL_INTERVAL_MINUTES",
-    20,
-)
-
-MIN_SIGNAL_SCORE = get_int(
-    "MIN_SIGNAL_SCORE",
-    85,
-)
-
-DB_PATH = os.getenv(
-    "DB_PATH",
-    "bot.db",
+    if not value:
+        raise RuntimeError(
+            f"Environment variable {name} is required."
+        )
+    return value
+BOT_TOKEN = get_required_env("BOT_TOKEN")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "sqlite+aiosqlite:///./teyzus.db",
 )
 MARKET_API_URL = os.getenv(
     "MARKET_API_URL",
     "",
 ).strip()
-
 MARKET_API_KEY = os.getenv(
     "MARKET_API_KEY",
     "",
-).strip()
-
-
-if not BOT_TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN не установлен."
+).strip() or None
+HOST = os.getenv(
+    "HOST",
+    "0.0.0.0",
+)
+PORT = int(
+    os.getenv(
+        "PORT",
+        "10000",
     )
-
-if not ADMIN_ID:
-    raise RuntimeError(
-        "ADMIN_ID не установлен."
+)
+OWNER_ID = int(
+    os.getenv(
+        "OWNER_ID",
+        "0",
     )
+)
+# Интервал между основными циклами.
+SIGNAL_INTERVAL_MINUTES = int(
+    os.getenv(
+        "SIGNAL_INTERVAL_MINUTES",
+        "20",
+    )
+)
+# За сколько минут отправлять предупреждение.
+PRE_SIGNAL_WARNING_MINUTES = int(
+    os.getenv(
+        "PRE_SIGNAL_WARNING_MINUTES",
+        "2",
+    )
+)
+# Минимальный аналитический score.
+MIN_SIGNAL_SCORE = float(
+    os.getenv(
+        "MIN_SIGNAL_SCORE",
+        "85",
+    )
+)
+# Минимальная историческая вероятность.
+MIN_HISTORICAL_PROBABILITY = float(
+    os.getenv(
+        "MIN_HISTORICAL_PROBABILITY",
+        "70",
+    )
+)
+LOG_LEVEL = os.getenv(
+    "LOG_LEVEL",
+    "INFO",
+).upper()
