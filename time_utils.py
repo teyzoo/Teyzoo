@@ -10,7 +10,6 @@ MOSCOW = ZoneInfo(
 
 
 def now_moscow() -> datetime:
-
     return datetime.now(
         MOSCOW
     )
@@ -51,6 +50,16 @@ def next_20_minute_mark(
     )
 
 
+def signal_warning_time(
+    close_time: datetime,
+) -> datetime:
+
+    return (
+        close_time
+        - timedelta(minutes=2)
+    )
+
+
 def format_moscow_time(
     value: datetime,
 ) -> str:
@@ -62,4 +71,17 @@ def format_moscow_time(
     return (
         value.strftime("%H:%M")
         + " МСК"
+    )
+
+
+def format_moscow_datetime(
+    value: datetime,
+) -> str:
+
+    value = value.astimezone(
+        MOSCOW
+    )
+
+    return value.strftime(
+        "%d.%m.%Y %H:%M:%S МСК"
     )
