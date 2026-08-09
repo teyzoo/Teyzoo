@@ -6,11 +6,10 @@ from datetime import datetime
 
 from market import MarketClient
 from models import Direction
+from time_utils import ensure_moscow
 
 
-logger = logging.getLogger(
-    "signal_tracker"
-)
+logger = logging.getLogger("signal_tracker")
 
 
 @dataclass(slots=True)
@@ -28,7 +27,6 @@ class SignalTracker:
         self,
         market: MarketClient,
     ):
-
         self.market = market
 
     async def get_current_price(
@@ -47,7 +45,7 @@ class SignalTracker:
                 "No market candles."
             )
 
-        return candles[-1].close
+        return float(candles[-1].close)
 
     @staticmethod
     def calculate_result(
@@ -64,15 +62,28 @@ class SignalTracker:
 
         return False
 
+    @staticmethod
+    def is_expired(
+        expiry_time: datetime,
+        now: datetime | None = None,
+    ) -> bool:
+
+        if now is None:
+            from time_utils import now_moscow
+
+            now = now_moscow()
+
+        return ensure_moscow(now) >= ensure_moscow(
+            expiry_time
+        )
+
     async def check_signal(
         self,
         signal: TrackedSignal,
-    ) -> bool:
+    ) -> tuple[bool, float]:
 
-        exit_price = (
-            await self.get_current_price(
-                signal.symbol
-            )
+        exit_price = await self.get_current_price(
+            signal.symbol
         )
 
         won = self.calculate_result(
@@ -82,9 +93,11 @@ class SignalTracker:
         )
 
         logger.info(
-            "Signal #%s result: %s",
+            "Signal #%s result: %s | entry=%s exit=%s",
             signal.signal_id,
             "WON" if won else "LOST",
+            signal.entry_price,
+            exit_price,
         )
 
-        return won
+        return won, exit_price
