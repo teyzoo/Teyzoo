@@ -1,15 +1,4 @@
-from __future__ import annotations
+# handlers/__init__.py
 
-from . import (
-    admin,
-    applications,
-    signals,
-    start,
-)
-
-__all__ = [
-    "start",
-    "signals",
-    "applications",
-    "admin",
-]
+# Не импортируем и не подключаем routers здесь.
+# Все routers подключаются только в main.py.
