@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from statistics import mean, pstdev
+from statistics import mean
 
 from market import Candle
 
@@ -45,21 +45,48 @@ def _ema(
     return result
 
 
+def _ema_series(
+    values: list[float],
+    period: int,
+) -> list[float]:
+
+    if len(values) < period:
+        return []
+
+    multiplier = 2 / (period + 1)
+
+    current = mean(
+        values[:period]
+    )
+
+    result = [current]
+
+    for value in values[period:]:
+        current = (
+            value - current
+        ) * multiplier + current
+
+        result.append(current)
+
+    return result
+
+
 def _rsi(
     values: list[float],
     period: int = 14,
 ) -> float | None:
 
-    if len(values) < period + 1:
+    if len(values) <= period:
         return None
 
     gains: list[float] = []
     losses: list[float] = []
 
     for index in range(
-        len(values) - period,
+        1,
         len(values),
     ):
+
         change = (
             values[index]
             - values[index - 1]
@@ -68,19 +95,45 @@ def _rsi(
         if change > 0:
             gains.append(change)
             losses.append(0.0)
+
         else:
             gains.append(0.0)
             losses.append(abs(change))
 
-    average_gain = mean(gains)
-    average_loss = mean(losses)
+    avg_gain = mean(
+        gains[:period]
+    )
 
-    if average_loss == 0:
+    avg_loss = mean(
+        losses[:period]
+    )
+
+    for index in range(
+        period,
+        len(gains),
+    ):
+
+        avg_gain = (
+            (
+                avg_gain
+                * (period - 1)
+            )
+            + gains[index]
+        ) / period
+
+        avg_loss = (
+            (
+                avg_loss
+                * (period - 1)
+            )
+            + losses[index]
+        ) / period
+
+    if avg_loss == 0:
         return 100.0
 
     relative_strength = (
-        average_gain
-        / average_loss
+        avg_gain / avg_loss
     )
 
     return (
@@ -92,6 +145,63 @@ def _rsi(
                 + relative_strength
             )
         )
+    )
+
+
+def _macd(
+    values: list[float],
+) -> tuple[
+    float | None,
+    float | None,
+]:
+
+    fast = _ema_series(
+        values,
+        12,
+    )
+
+    slow = _ema_series(
+        values,
+        26,
+    )
+
+    if not fast or not slow:
+        return None, None
+
+    offset = 26 - 12
+
+    macd_values: list[float] = []
+
+    for index, slow_value in enumerate(slow):
+
+        fast_index = (
+            index + offset
+        )
+
+        if fast_index >= len(fast):
+            break
+
+        macd_values.append(
+            fast[fast_index]
+            - slow_value
+        )
+
+    if not macd_values:
+        return None, None
+
+    macd_value = macd_values[-1]
+
+    signal_series = _ema_series(
+        macd_values,
+        9,
+    )
+
+    if not signal_series:
+        return macd_value, None
+
+    return (
+        macd_value,
+        signal_series[-1],
     )
 
 
@@ -112,87 +222,34 @@ def _bollinger(
 
     middle = mean(window)
 
-    deviation = pstdev(window)
+    variance = mean(
+        (
+            value - middle
+        ) ** 2
+        for value in window
+    )
+
+    standard_deviation = (
+        variance ** 0.5
+    )
 
     upper = (
         middle
-        + deviations * deviation
+        + deviations
+        * standard_deviation
     )
 
     lower = (
         middle
-        - deviations * deviation
+        - deviations
+        * standard_deviation
     )
 
-    return upper, middle, lower
-
-
-def _macd(
-    values: list[float],
-) -> tuple[
-    float | None,
-    float | None,
-]:
-
-    if len(values) < 35:
-        return None, None
-
-    ema12 = _ema(
-        values,
-        12,
+    return (
+        upper,
+        middle,
+        lower,
     )
-
-    ema26 = _ema(
-        values,
-        26,
-    )
-
-    if (
-        ema12 is None
-        or ema26 is None
-    ):
-        return None, None
-
-    macd_value = (
-        ema12 - ema26
-    )
-
-    macd_history: list[float] = []
-
-    for index in range(
-        26,
-        len(values) + 1,
-    ):
-
-        part = values[:index]
-
-        fast = _ema(
-            part,
-            12,
-        )
-
-        slow = _ema(
-            part,
-            26,
-        )
-
-        if (
-            fast is not None
-            and slow is not None
-        ):
-            macd_history.append(
-                fast - slow
-            )
-
-    if len(macd_history) < 9:
-        return macd_value, None
-
-    signal = _ema(
-        macd_history,
-        9,
-    )
-
-    return macd_value, signal
 
 
 def calculate_indicators(
@@ -252,3 +309,4 @@ def calculate_indicators(
         bollinger_middle=bollinger_middle,
         bollinger_lower=bollinger_lower,
     )
+    
