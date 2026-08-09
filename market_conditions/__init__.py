@@ -2,155 +2,122 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from indicators import (
+    calculate_indicators,
+)
 from market import Candle
 
 
 @dataclass(slots=True)
 class MarketConditionResult:
     acceptable: bool
-    volatility: float
-    trend_strength: float
     reasons: list[str]
+    volatility: float | None
 
 
 def evaluate_market_conditions(
     candles: list[Candle],
 ) -> MarketConditionResult:
 
-    if len(candles) < 30:
+    if len(candles) < 50:
 
         return MarketConditionResult(
             acceptable=False,
-            volatility=0.0,
-            trend_strength=0.0,
             reasons=[
-                "Недостаточно свечей."
+                "Недостаточно свечей "
+                "для оценки условий рынка."
             ],
+            volatility=None,
         )
 
-    recent = candles[-30:]
-
-    closes = [
-        candle.close
-        for candle in recent
-    ]
-
-    if not closes:
-
-        return MarketConditionResult(
-            acceptable=False,
-            volatility=0.0,
-            trend_strength=0.0,
-            reasons=[
-                "Нет цен закрытия."
-            ],
+    indicators = (
+        calculate_indicators(
+            candles
         )
-
-    average_price = (
-        sum(closes)
-        / len(closes)
-    )
-
-    if average_price <= 0:
-
-        return MarketConditionResult(
-            acceptable=False,
-            volatility=0.0,
-            trend_strength=0.0,
-            reasons=[
-                "Некорректная цена."
-            ],
-        )
-
-    changes: list[float] = []
-
-    for index in range(
-        1,
-        len(closes),
-    ):
-
-        previous = closes[index - 1]
-        current = closes[index]
-
-        if previous == 0:
-            continue
-
-        changes.append(
-            abs(
-                current - previous
-            )
-            / previous
-            * 100
-        )
-
-    if not changes:
-
-        return MarketConditionResult(
-            acceptable=False,
-            volatility=0.0,
-            trend_strength=0.0,
-            reasons=[
-                "Недостаточно изменений цены."
-            ],
-        )
-
-    volatility = (
-        sum(changes)
-        / len(changes)
-    )
-
-    first = closes[0]
-    last = closes[-1]
-
-    trend_strength = (
-        abs(last - first)
-        / first
-        * 100
-        if first
-        else 0.0
     )
 
     reasons: list[str] = []
 
-    if volatility < 0.0001:
+    # Не принимаем экстремально низкую
+    # волатильность.
+    if (
+        indicators.volatility
+        is not None
+        and indicators.volatility < 0.005
+    ):
 
-        reasons.append(
-            "Рынок практически не движется."
+        return MarketConditionResult(
+            acceptable=False,
+            reasons=[
+                "Слишком низкая волатильность."
+            ],
+            volatility=(
+                indicators.volatility
+            ),
         )
 
-    elif volatility > 1.5:
+    # Не принимаем экстремально высокую
+    # волатильность.
+    if (
+        indicators.volatility
+        is not None
+        and indicators.volatility > 5.0
+    ):
 
-        reasons.append(
-            "Слишком высокая волатильность."
+        return MarketConditionResult(
+            acceptable=False,
+            reasons=[
+                "Слишком высокая волатильность."
+            ],
+            volatility=(
+                indicators.volatility
+            ),
         )
 
-    else:
+    if indicators.volatility is not None:
 
         reasons.append(
             "Волатильность находится "
             "в допустимом диапазоне."
         )
 
-    if trend_strength < 0.02:
+    if (
+        indicators.ema_fast is not None
+        and indicators.ema_slow is not None
+    ):
 
-        reasons.append(
-            "Выраженный тренд отсутствует."
+        distance = abs(
+            indicators.ema_fast
+            - indicators.ema_slow
         )
 
-    else:
+        if distance == 0:
+
+            return MarketConditionResult(
+                acceptable=False,
+                reasons=[
+                    "EMA практически совпадают."
+                ],
+                volatility=(
+                    indicators.volatility
+                ),
+            )
 
         reasons.append(
-            "Наблюдается движение цены."
+            "На рынке присутствует "
+            "выраженное направление."
         )
-
-    acceptable = (
-        0.0001 <= volatility <= 1.5
-        and trend_strength >= 0.02
-    )
 
     return MarketConditionResult(
-        acceptable=acceptable,
-        volatility=volatility,
-        trend_strength=trend_strength,
+        acceptable=True,
         reasons=reasons,
+        volatility=(
+            indicators.volatility
+        ),
     )
+
+
+__all__ = [
+    "MarketConditionResult",
+    "evaluate_market_conditions",
+]
