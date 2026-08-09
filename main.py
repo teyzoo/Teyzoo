@@ -16,21 +16,11 @@ from database import (
     close_database,
     init_database,
 )
-from market_factory import (
-    create_market_client,
-)
-from scheduler import (
-    Scheduler,
-)
-from handlers.start import router as start_router
-from handlers.signals import router as signals_router
-from handlers.applications import (
-    router as applications_router,
-)
-from handlers.admin import router as admin_router
-# =========================================================
+from market_factory import create_market_client
+from scheduler import Scheduler
+# ============================================================
 # LOGGING
-# =========================================================
+# ============================================================
 logging.basicConfig(
     level=logging.INFO,
     format=(
@@ -41,49 +31,70 @@ logging.basicConfig(
     ),
 )
 logger = logging.getLogger("main")
-# =========================================================
+# ============================================================
 # BOT
-# =========================================================
+# ============================================================
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(
         parse_mode=ParseMode.HTML,
     ),
 )
-# =========================================================
+# ============================================================
 # DISPATCHER
-# =========================================================
+# ============================================================
 dp = Dispatcher()
-# =========================================================
+# ============================================================
 # ROUTERS
-# =========================================================
-# Каждый router подключается РОВНО ОДИН РАЗ.
-dp.include_router(start_router)
-dp.include_router(signals_router)
-dp.include_router(applications_router)
-dp.include_router(admin_router)
-logger.info(
-    "All Telegram routers registered."
-)
-# =========================================================
+# ============================================================
+def register_routers() -> None:
+    """
+    Регистрирует Telegram routers ровно один раз.
+    ВАЖНО:
+    Не подключаем routers напрямую в нескольких местах.
+    """
+    from handlers.start import router as start_router
+    from handlers.signals import router as signals_router
+    from handlers.applications import router as applications_router
+    from handlers.admin import router as admin_router
+    routers = [
+        start_router,
+        signals_router,
+        applications_router,
+        admin_router,
+    ]
+    for router in routers:
+        # Если router уже находится внутри этого Dispatcher,
+        # повторно подключать его нельзя.
+        if router.parent_router is None:
+            dp.include_router(router)
+    logger.info(
+        "All Telegram routers registered."
+    )
+# Регистрируем routers один раз.
+register_routers()
+# ============================================================
 # MARKET
-# =========================================================
+# ============================================================
 market = create_market_client()
-# =========================================================
+# ============================================================
 # SCHEDULER
-# =========================================================
+# ============================================================
 scheduler = Scheduler(
     bot=bot,
     market=market,
 )
-# =========================================================
+# ============================================================
 # BOT TASK
-# =========================================================
+# ============================================================
 bot_task: asyncio.Task | None = None
-# =========================================================
+# ============================================================
 # TELEGRAM POLLING
-# =========================================================
+# ============================================================
 async def bot_polling() -> None:
+    """
+    Запускает Telegram polling.
+    """
     logger.info(
         "Telegram polling starting..."
     )
@@ -93,9 +104,7 @@ async def bot_polling() -> None:
         )
         await dp.start_polling(
             bot,
-            allowed_updates=(
-                dp.resolve_used_update_types()
-            ),
+            allowed_updates=dp.resolve_used_update_types(),
         )
     except asyncio.CancelledError:
         logger.info(
@@ -107,9 +116,9 @@ async def bot_polling() -> None:
             "Telegram polling crashed."
         )
         raise
-# =========================================================
+# ============================================================
 # FASTAPI LIFESPAN
-# =========================================================
+# ============================================================
 @asynccontextmanager
 async def lifespan(
     app: FastAPI,
@@ -124,16 +133,19 @@ async def lifespan(
     logger.info(
         "================================"
     )
-    # -----------------------------------------------------
+    # ========================================================
     # CONFIG
-    # -----------------------------------------------------
+    # ========================================================
+    logger.info(
+        "Validating configuration..."
+    )
     validate_config()
     logger.info(
-        "Configuration validated."
+        "Configuration valid."
     )
-    # -----------------------------------------------------
+    # ========================================================
     # DATABASE
-    # -----------------------------------------------------
+    # ========================================================
     logger.info(
         "Initializing database..."
     )
@@ -141,9 +153,9 @@ async def lifespan(
     logger.info(
         "Database initialized."
     )
-    # -----------------------------------------------------
+    # ========================================================
     # MARKET
-    # -----------------------------------------------------
+    # ========================================================
     logger.info(
         "Starting market client..."
     )
@@ -151,9 +163,9 @@ async def lifespan(
     logger.info(
         "Market client started."
     )
-    # -----------------------------------------------------
+    # ========================================================
     # SCHEDULER
-    # -----------------------------------------------------
+    # ========================================================
     logger.info(
         "Starting scheduler..."
     )
@@ -161,9 +173,9 @@ async def lifespan(
     logger.info(
         "Scheduler started."
     )
-    # -----------------------------------------------------
+    # ========================================================
     # TELEGRAM
-    # -----------------------------------------------------
+    # ========================================================
     logger.info(
         "Starting Telegram bot..."
     )
@@ -186,9 +198,9 @@ async def lifespan(
         logger.info(
             "================================"
         )
-        # -------------------------------------------------
+        # ====================================================
         # TELEGRAM
-        # -------------------------------------------------
+        # ====================================================
         if bot_task is not None:
             logger.info(
                 "Stopping Telegram bot..."
@@ -202,9 +214,9 @@ async def lifespan(
                 logger.exception(
                     "Telegram bot shutdown error."
                 )
-        # -------------------------------------------------
+        # ====================================================
         # SCHEDULER
-        # -------------------------------------------------
+        # ====================================================
         logger.info(
             "Stopping scheduler..."
         )
@@ -214,9 +226,9 @@ async def lifespan(
             logger.exception(
                 "Scheduler shutdown error."
             )
-        # -------------------------------------------------
+        # ====================================================
         # MARKET
-        # -------------------------------------------------
+        # ====================================================
         logger.info(
             "Stopping market client..."
         )
@@ -226,9 +238,9 @@ async def lifespan(
             logger.exception(
                 "Market client shutdown error."
             )
-        # -------------------------------------------------
+        # ====================================================
         # DATABASE
-        # -------------------------------------------------
+        # ====================================================
         logger.info(
             "Closing database..."
         )
@@ -238,57 +250,74 @@ async def lifespan(
             logger.exception(
                 "Database shutdown error."
             )
+        # ====================================================
+        # BOT SESSION
+        # ====================================================
+        logger.info(
+            "Closing Telegram bot session..."
+        )
+        try:
+            await bot.session.close()
+        except Exception:
+            logger.exception(
+                "Telegram bot session shutdown error."
+            )
         logger.info(
             "TEYZUS stopped."
         )
-# =========================================================
-# FASTAPI
-# =========================================================
+# ============================================================
+# FASTAPI APP
+# ============================================================
 app = FastAPI(
     title="TEYZUS",
     description="TEYZUS market signal service",
     version="1.0.0",
     lifespan=lifespan,
 )
-# =========================================================
+# ============================================================
 # ROOT
-# =========================================================
+# ============================================================
 @app.get("/")
 async def root():
     return {
         "status": "ok",
         "service": "TEYZUS",
     }
-# =========================================================
+# ============================================================
 # HEALTH
-# =========================================================
+# ============================================================
 @app.get("/health")
 async def health():
     return {
         "status": "healthy",
         "service": "TEYZUS",
     }
-# =========================================================
+# ============================================================
 # API STATUS
-# =========================================================
+# ============================================================
 @app.get("/api/status")
 async def api_status():
+    telegram_status = (
+        "stopped"
+        if bot_task is None
+        else (
+            "running"
+            if not bot_task.done()
+            else "stopped"
+        )
+    )
     return {
         "status": "running",
         "service": "TEYZUS",
-        "telegram": (
-            "starting"
-            if bot_task is None
-            else "running"
-        ),
+        "telegram": telegram_status,
     }
-# =========================================================
-# LOCAL START
-# =========================================================
+# ============================================================
+# MAIN
+# ============================================================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app",
+        app,
         host=HOST,
         port=PORT,
         reload=False,
