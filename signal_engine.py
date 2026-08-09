@@ -2,22 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from indicators import calculate_indicators
+from indicators import (
+    calculate_indicators,
+)
 from market import Candle
 from models import Direction
 
 
 @dataclass(slots=True)
 class AnalysisResult:
-
     direction: Direction | None
-
     score: float
-
     reasons: list[str]
-
     confirmations: int
-
     total_checks: int
 
 
@@ -70,7 +67,7 @@ class SignalEngine:
                 bullish += 1
 
                 reasons.append(
-                    "EMA подтверждает рост."
+                    "EMA: bullish"
                 )
 
             elif (
@@ -81,7 +78,7 @@ class SignalEngine:
                 bearish += 1
 
                 reasons.append(
-                    "EMA подтверждает снижение."
+                    "EMA: bearish"
                 )
 
         if indicators.rsi is not None:
@@ -93,8 +90,7 @@ class SignalEngine:
                 bullish += 1
 
                 reasons.append(
-                    "RSI показывает "
-                    "перепроданность."
+                    "RSI: oversold"
                 )
 
             elif indicators.rsi > 65:
@@ -102,12 +98,12 @@ class SignalEngine:
                 bearish += 1
 
                 reasons.append(
-                    "RSI показывает "
-                    "перекупленность."
+                    "RSI: overbought"
                 )
 
         if (
-            indicators.macd is not None
+            indicators.macd
+            is not None
             and indicators.macd_signal
             is not None
         ):
@@ -122,7 +118,7 @@ class SignalEngine:
                 bullish += 1
 
                 reasons.append(
-                    "MACD подтверждает рост."
+                    "MACD: bullish"
                 )
 
             elif (
@@ -133,7 +129,7 @@ class SignalEngine:
                 bearish += 1
 
                 reasons.append(
-                    "MACD подтверждает снижение."
+                    "MACD: bearish"
                 )
 
         if (
@@ -153,8 +149,7 @@ class SignalEngine:
                 bullish += 1
 
                 reasons.append(
-                    "Цена возле нижней "
-                    "границы Bollinger."
+                    "Bollinger: lower band"
                 )
 
             elif (
@@ -165,8 +160,7 @@ class SignalEngine:
                 bearish += 1
 
                 reasons.append(
-                    "Цена возле верхней "
-                    "границы Bollinger."
+                    "Bollinger: upper band"
                 )
 
         if checks == 0:
@@ -195,35 +189,27 @@ class SignalEngine:
 
         if bullish > bearish:
 
-            confirmations = bullish
-
-            score = (
-                confirmations
-                / checks
-                * 100
-            )
-
             return AnalysisResult(
                 direction=Direction.UP,
-                score=score,
+                score=(
+                    bullish
+                    / checks
+                    * 100
+                ),
                 reasons=reasons,
-                confirmations=confirmations,
+                confirmations=bullish,
                 total_checks=checks,
             )
 
-        confirmations = bearish
-
-        score = (
-            confirmations
-            / checks
-            * 100
-        )
-
         return AnalysisResult(
             direction=Direction.DOWN,
-            score=score,
+            score=(
+                bearish
+                / checks
+                * 100
+            ),
             reasons=reasons,
-            confirmations=confirmations,
+            confirmations=bearish,
             total_checks=checks,
         )
 
