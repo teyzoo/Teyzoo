@@ -10,14 +10,14 @@ from probability import (
 
 @dataclass(slots=True)
 class SignalPolicyResult:
-
     allowed: bool
-
     reason: str
 
     quality_score: float
 
-    historical_probability: float | None
+    historical_probability: (
+        float | None
+    )
 
 
 class SignalPolicy:
@@ -71,7 +71,8 @@ class SignalPolicy:
                 allowed=False,
                 reason=(
                     "Недостаточно исторических "
-                    "данных."
+                    "данных для достоверной "
+                    "оценки вероятности."
                 ),
                 quality_score=quality_score,
                 historical_probability=None,
@@ -86,7 +87,7 @@ class SignalPolicy:
                 allowed=False,
                 reason=(
                     "Историческая вероятность "
-                    "ниже установленного порога."
+                    "ниже допустимого порога."
                 ),
                 quality_score=quality_score,
                 historical_probability=probability,
