@@ -1,146 +1,87 @@
-from aiogram import Router, F
-from aiogram.types import CallbackQuery
+from __future__ import annotations
 
-from config import ADMIN_ID
+from aiogram import Router
+from aiogram.filters import Command
+from aiogram.types import Message
+
+from config import ADMIN_IDS
 from database import (
-    get_application,
-    update_application,
+    get_active_users,
+    get_recent_signals,
 )
 
 
-router = Router()
-
-
-@router.callback_query(
-    F.data.startswith("app_accept:")
+router = Router(
+    name="admin"
 )
-async def accept_application(
-    callback: CallbackQuery,
+
+
+def is_admin(
+    telegram_id: int,
+) -> bool:
+
+    return telegram_id in ADMIN_IDS
+
+
+@router.message(
+    Command("admin")
+)
+async def admin_handler(
+    message: Message,
 ):
 
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer(
-            "⛔ Нет доступа.",
-            show_alert=True,
-        )
+    if message.from_user is None:
         return
 
-    application_id = int(
-        callback.data.split(":")[1]
-    )
+    if not is_admin(
+        message.from_user.id
+    ):
 
-    application = await get_application(
-        application_id
-    )
-
-    if not application:
-        await callback.answer(
-            "Заявка не найдена.",
-            show_alert=True,
+        await message.answer(
+            "⛔ Доступ запрещён."
         )
+
         return
 
-    (
-        _id,
-        telegram_id,
-        username,
-        text,
-        status,
-    ) = application
+    users = (
+        await get_active_users()
+    )
 
-    if status != "pending":
-        await callback.answer(
-            "Заявка уже обработана.",
-            show_alert=True,
+    signals = (
+        await get_recent_signals(
+            limit=10
         )
-        return
-
-    await update_application(
-        application_id,
-        "accepted",
     )
 
-    await callback.bot.send_message(
-        telegram_id,
-        "✅ <b>Ваша заявка принята!</b>\n\n"
-        "Администратор одобрил заявку.",
-        parse_mode="HTML",
+    text = (
+        "👑 <b>TEYZUS ADMIN</b>\n\n"
+        f"👥 Активных пользователей: "
+        f"<b>{len(users)}</b>\n"
+        f"📊 Последних сигналов: "
+        f"<b>{len(signals)}</b>\n\n"
     )
 
-    await callback.message.edit_text(
-        callback.message.text
-        + "\n\n"
-        "✅ <b>ЗАЯВКА ПРИНЯТА</b>",
-        parse_mode="HTML",
-    )
+    if signals:
 
-    await callback.answer(
-        "Заявка принята."
-    )
-
-
-@router.callback_query(
-    F.data.startswith("app_reject:")
-)
-async def reject_application(
-    callback: CallbackQuery,
-):
-
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer(
-            "⛔ Нет доступа.",
-            show_alert=True,
+        text += (
+            "Последние сигналы:\n\n"
         )
-        return
 
-    application_id = int(
-        callback.data.split(":")[1]
-    )
+        for signal in signals:
 
-    application = await get_application(
-        application_id
-    )
+            text += (
+                f"#{signal.id} "
+                f"{signal.symbol} "
+                f"{signal.direction} "
+                f"{signal.score:.1f}%\n"
+            )
 
-    if not application:
-        await callback.answer(
-            "Заявка не найдена.",
-            show_alert=True,
+    else:
+
+        text += (
+            "Сигналов пока нет."
         )
-        return
 
-    (
-        _id,
-        telegram_id,
-        username,
-        text,
-        status,
-    ) = application
-
-    if status != "pending":
-        await callback.answer(
-            "Заявка уже обработана.",
-            show_alert=True,
-        )
-        return
-
-    await update_application(
-        application_id,
-        "rejected",
-    )
-
-    await callback.bot.send_message(
-        telegram_id,
-        "❌ <b>Ваша заявка отклонена.</b>",
-        parse_mode="HTML",
-    )
-
-    await callback.message.edit_text(
-        callback.message.text
-        + "\n\n"
-        "❌ <b>ЗАЯВКА ОТКЛОНЕНА</b>",
-        parse_mode="HTML",
-    )
-
-    await callback.answer(
-        "Заявка отклонена."
+    await message.answer(
+        text
     )
