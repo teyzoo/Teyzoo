@@ -3,86 +3,154 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from market import Candle
-from indicators import calculate_indicators
 
 
 @dataclass(slots=True)
 class MarketConditionResult:
-    allowed: bool
+    acceptable: bool
+    volatility: float
+    trend_strength: float
     reasons: list[str]
-    warnings: list[str]
 
 
 def evaluate_market_conditions(
     candles: list[Candle],
 ) -> MarketConditionResult:
 
-    if len(candles) < 50:
+    if len(candles) < 30:
+
         return MarketConditionResult(
-            allowed=False,
-            reasons=[],
-            warnings=[
-                "Недостаточно рыночных данных."
+            acceptable=False,
+            volatility=0.0,
+            trend_strength=0.0,
+            reasons=[
+                "Недостаточно свечей."
             ],
         )
 
-    indicators = calculate_indicators(
-        candles
+    recent = candles[-30:]
+
+    closes = [
+        candle.close
+        for candle in recent
+    ]
+
+    if not closes:
+
+        return MarketConditionResult(
+            acceptable=False,
+            volatility=0.0,
+            trend_strength=0.0,
+            reasons=[
+                "Нет цен закрытия."
+            ],
+        )
+
+    average_price = (
+        sum(closes)
+        / len(closes)
+    )
+
+    if average_price <= 0:
+
+        return MarketConditionResult(
+            acceptable=False,
+            volatility=0.0,
+            trend_strength=0.0,
+            reasons=[
+                "Некорректная цена."
+            ],
+        )
+
+    changes: list[float] = []
+
+    for index in range(
+        1,
+        len(closes),
+    ):
+
+        previous = closes[index - 1]
+        current = closes[index]
+
+        if previous == 0:
+            continue
+
+        changes.append(
+            abs(
+                current - previous
+            )
+            / previous
+            * 100
+        )
+
+    if not changes:
+
+        return MarketConditionResult(
+            acceptable=False,
+            volatility=0.0,
+            trend_strength=0.0,
+            reasons=[
+                "Недостаточно изменений цены."
+            ],
+        )
+
+    volatility = (
+        sum(changes)
+        / len(changes)
+    )
+
+    first = closes[0]
+    last = closes[-1]
+
+    trend_strength = (
+        abs(last - first)
+        / first
+        * 100
+        if first
+        else 0.0
     )
 
     reasons: list[str] = []
-    warnings: list[str] = []
 
-    if (
-        indicators.ema_fast is None
-        or indicators.ema_slow is None
-    ):
-        warnings.append(
-            "EMA недоступна."
-        )
-    else:
+    if volatility < 0.0001:
+
         reasons.append(
-            "EMA рассчитана."
+            "Рынок практически не движется."
         )
 
-    if indicators.rsi is None:
-        warnings.append(
-            "RSI недоступен."
-        )
-    else:
-        if (
-            indicators.rsi < 20
-            or indicators.rsi > 80
-        ):
-            warnings.append(
-                "RSI находится в экстремальной зоне."
-            )
-        else:
-            reasons.append(
-                "RSI в рабочем диапазоне."
-            )
+    elif volatility > 1.5:
 
-    if (
-        indicators.bollinger_upper is not None
-        and indicators.bollinger_lower is not None
-    ):
         reasons.append(
-            "Bollinger Bands рассчитаны."
-        )
-    else:
-        warnings.append(
-            "Bollinger Bands недоступны."
+            "Слишком высокая волатильность."
         )
 
-    if len(warnings) >= 2:
-        return MarketConditionResult(
-            allowed=False,
-            reasons=reasons,
-            warnings=warnings,
+    else:
+
+        reasons.append(
+            "Волатильность находится "
+            "в допустимом диапазоне."
         )
+
+    if trend_strength < 0.02:
+
+        reasons.append(
+            "Выраженный тренд отсутствует."
+        )
+
+    else:
+
+        reasons.append(
+            "Наблюдается движение цены."
+        )
+
+    acceptable = (
+        0.0001 <= volatility <= 1.5
+        and trend_strength >= 0.02
+    )
 
     return MarketConditionResult(
-        allowed=True,
+        acceptable=acceptable,
+        volatility=volatility,
+        trend_strength=trend_strength,
         reasons=reasons,
-        warnings=warnings,
     )
