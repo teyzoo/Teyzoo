@@ -41,6 +41,15 @@ DB_PATH = os.getenv(
     "DB_PATH",
     "bot.db",
 )
+MARKET_API_URL = os.getenv(
+    "MARKET_API_URL",
+    "",
+).strip()
+
+MARKET_API_KEY = os.getenv(
+    "MARKET_API_KEY",
+    "",
+).strip()
 
 
 if not BOT_TOKEN:
