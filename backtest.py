@@ -3,30 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from market import Candle
-from models import Direction
-from signal_engine import (
-    SignalEngine,
+from indicators import (
+    calculate_indicators,
 )
 
+from market import Candle
 
-# ============================================================
-# НАСТРОЙКИ BACKTEST
-# ============================================================
+from models import Direction
 
-DEFAULT_EXPIRY_MINUTES = 1
-
-# Не считаем статистику надёжной,
-# пока не накопилось достаточно сделок.
-MINIMUM_SAMPLE_SIZE = 100
-
-# Минимальный технический score.
-DEFAULT_MINIMUM_SCORE = 80.0
-
-
-# ============================================================
-# BACKTEST TRADE
-# ============================================================
 
 @dataclass(slots=True)
 class BacktestTrade:
@@ -46,10 +30,6 @@ class BacktestTrade:
     score: float
 
 
-# ============================================================
-# BACKTEST STATS
-# ============================================================
-
 @dataclass(slots=True)
 class BacktestStats:
 
@@ -65,160 +45,181 @@ class BacktestStats:
 
     max_consecutive_losses: int
 
-    # Дополнительная статистика
-    up_total: int
 
-    up_wins: int
+def calculate_direction(
+    candles: list[Candle],
+) -> tuple[
+    Direction | None,
+    float,
+]:
 
-    up_win_rate: float
+    if len(candles) < 50:
+        return None, 0.0
 
-    down_total: int
+    indicators = (
+        calculate_indicators(
+            candles
+        )
+    )
 
-    down_wins: int
+    bullish = 0
+    bearish = 0
 
-    down_win_rate: float
+    checks = 0
 
-    statistically_reliable: bool
+    if (
+        indicators.ema_fast
+        is not None
+        and indicators.ema_slow
+        is not None
+    ):
 
-    minimum_sample_size: int
+        checks += 1
 
+        if (
+            indicators.ema_fast
+            > indicators.ema_slow
+        ):
 
-# ============================================================
-# EMPTY STATS
-# ============================================================
+            bullish += 1
 
-def empty_stats() -> BacktestStats:
+        elif (
+            indicators.ema_fast
+            < indicators.ema_slow
+        ):
 
-    return BacktestStats(
-        total=0,
-        wins=0,
-        losses=0,
-        win_rate=0.0,
-        average_score=0.0,
-        max_consecutive_losses=0,
-        up_total=0,
-        up_wins=0,
-        up_win_rate=0.0,
-        down_total=0,
-        down_wins=0,
-        down_win_rate=0.0,
-        statistically_reliable=False,
-        minimum_sample_size=(
-            MINIMUM_SAMPLE_SIZE
-        ),
+            bearish += 1
+
+    if (
+        indicators.macd
+        is not None
+        and indicators.macd_signal
+        is not None
+    ):
+
+        checks += 1
+
+        if (
+            indicators.macd
+            > indicators.macd_signal
+        ):
+
+            bullish += 1
+
+        elif (
+            indicators.macd
+            < indicators.macd_signal
+        ):
+
+            bearish += 1
+
+    if indicators.rsi is not None:
+
+        checks += 1
+
+        if indicators.rsi < 35:
+            bullish += 1
+
+        elif indicators.rsi > 65:
+            bearish += 1
+
+    if (
+        indicators.bollinger_upper
+        is not None
+        and indicators.bollinger_lower
+        is not None
+    ):
+
+        checks += 1
+
+        if (
+            indicators.price
+            <= indicators.bollinger_lower
+        ):
+
+            bullish += 1
+
+        elif (
+            indicators.price
+            >= indicators.bollinger_upper
+        ):
+
+            bearish += 1
+
+    if checks == 0:
+        return None, 0.0
+
+    if bullish == bearish:
+        return None, 0.0
+
+    if bullish > bearish:
+
+        return (
+            Direction.UP,
+            bullish
+            / checks
+            * 100,
+        )
+
+    return (
+        Direction.DOWN,
+        bearish
+        / checks
+        * 100,
     )
 
 
-# ============================================================
-# BACKTEST
-# ============================================================
-
 def run_backtest(
     candles: list[Candle],
-    expiry_minutes: int = DEFAULT_EXPIRY_MINUTES,
-    minimum_score: float = DEFAULT_MINIMUM_SCORE,
+    expiry_minutes: int = 1,
+    minimum_score: float = 85.0,
 ) -> tuple[
     list[BacktestTrade],
     BacktestStats,
 ]:
 
-    trades: list[BacktestTrade] = []
+    trades: list[
+        BacktestTrade
+    ] = []
 
-    # --------------------------------------------------------
-    # Проверяем входные данные
-    # --------------------------------------------------------
-
-    if not candles:
+    if len(candles) < 60:
 
         return (
             trades,
-            empty_stats(),
+            BacktestStats(
+                total=0,
+                wins=0,
+                losses=0,
+                win_rate=0.0,
+                average_score=0.0,
+                max_consecutive_losses=0,
+            ),
         )
-
-    # Убираем возможные проблемы
-    # с неправильным порядком свечей.
-    candles = sorted(
-        candles,
-        key=lambda candle: candle.timestamp,
-    )
-
-    # Минимум данных для анализа.
-    if len(candles) < 100:
-
-        return (
-            trades,
-            empty_stats(),
-        )
-
-    # --------------------------------------------------------
-    # Engine
-    # --------------------------------------------------------
-
-    engine = SignalEngine()
 
     expiry_delta = timedelta(
         minutes=expiry_minutes
     )
 
-    # --------------------------------------------------------
-    # Перебираем исторические точки
-    # --------------------------------------------------------
-
     for index in range(
-        100,
+        50,
         len(candles),
     ):
 
-        # История ДО момента входа.
-        #
-        # Будущее никогда не передаём
-        # в SignalEngine.
         history = candles[
-            : index + 1
+            :index + 1
         ]
 
-        try:
-
-            result = engine.analyze(
+        direction, score = (
+            calculate_direction(
                 history
             )
+        )
 
-        except Exception:
-
-            # Одна повреждённая точка
-            # не должна ломать весь backtest.
+        if direction is None:
             continue
 
-        # ----------------------------------------------------
-        # Нет сигнала
-        # ----------------------------------------------------
-
-        if result.direction is None:
-
+        if score < minimum_score:
             continue
-
-        # ----------------------------------------------------
-        # Сигнал был отклонён engine
-        # ----------------------------------------------------
-
-        if result.rejected:
-
-            continue
-
-        # ----------------------------------------------------
-        # Проверяем score
-        # ----------------------------------------------------
-
-        if (
-            result.score
-            < minimum_score
-        ):
-
-            continue
-
-        # ----------------------------------------------------
-        # Точка входа
-        # ----------------------------------------------------
 
         entry = candles[index]
 
@@ -227,14 +228,10 @@ def run_backtest(
             + expiry_delta
         )
 
-        # ----------------------------------------------------
-        # Ищем свечу на момент expiry
-        # ----------------------------------------------------
-
         future = None
 
         for candidate in candles[
-            index + 1 :
+            index + 1:
         ]:
 
             if (
@@ -243,16 +240,10 @@ def run_backtest(
             ):
 
                 future = candidate
-
                 break
 
         if future is None:
-
             continue
-
-        # ----------------------------------------------------
-        # Цена
-        # ----------------------------------------------------
 
         entry_price = (
             entry.close
@@ -262,102 +253,48 @@ def run_backtest(
             future.close
         )
 
-        # ----------------------------------------------------
-        # Результат сделки
-        # ----------------------------------------------------
-
-        if (
-            result.direction
-            == Direction.UP
-        ):
+        if direction == Direction.UP:
 
             won = (
                 exit_price
                 > entry_price
             )
 
-        elif (
-            result.direction
-            == Direction.DOWN
-        ):
+        else:
 
             won = (
                 exit_price
                 < entry_price
             )
 
-        else:
-
-            continue
-
-        # ----------------------------------------------------
-        # Сохраняем сделку
-        # ----------------------------------------------------
-
         trades.append(
             BacktestTrade(
-                entry_time=(
-                    entry.timestamp
-                ),
-                expiry_time=(
-                    future.timestamp
-                ),
-                entry_price=(
-                    entry_price
-                ),
-                exit_price=(
-                    exit_price
-                ),
-                direction=(
-                    result.direction
-                ),
+                entry_time=entry.timestamp,
+                expiry_time=future.timestamp,
+                entry_price=entry_price,
+                exit_price=exit_price,
+                direction=direction,
                 won=won,
-                score=(
-                    result.score
-                ),
+                score=score,
             )
         )
 
-    # ========================================================
-    # СТАТИСТИКА
-    # ========================================================
-
     total = len(trades)
 
-    if total == 0:
-
-        return (
-            trades,
-            empty_stats(),
-        )
-
-    # --------------------------------------------------------
-    # Wins / losses
-    # --------------------------------------------------------
-
     wins = sum(
-        1
+        trade.won
         for trade in trades
-        if trade.won
     )
 
     losses = (
         total - wins
     )
 
-    # --------------------------------------------------------
-    # Win rate
-    # --------------------------------------------------------
-
     win_rate = (
-        wins
-        / total
-        * 100.0
+        wins / total * 100
+        if total
+        else 0.0
     )
-
-    # --------------------------------------------------------
-    # Average score
-    # --------------------------------------------------------
 
     average_score = (
         sum(
@@ -365,14 +302,11 @@ def run_backtest(
             for trade in trades
         )
         / total
+        if total
+        else 0.0
     )
 
-    # --------------------------------------------------------
-    # Максимальная серия убытков
-    # --------------------------------------------------------
-
     max_loss_streak = 0
-
     current_loss_streak = 0
 
     for trade in trades:
@@ -390,81 +324,6 @@ def run_backtest(
                 current_loss_streak,
             )
 
-    # --------------------------------------------------------
-    # UP
-    # --------------------------------------------------------
-
-    up_trades = [
-        trade
-        for trade in trades
-        if trade.direction
-        == Direction.UP
-    ]
-
-    up_total = len(
-        up_trades
-    )
-
-    up_wins = sum(
-        1
-        for trade in up_trades
-        if trade.won
-    )
-
-    if up_total:
-
-        up_win_rate = (
-            up_wins
-            / up_total
-            * 100.0
-        )
-
-    else:
-
-        up_win_rate = 0.0
-
-    # --------------------------------------------------------
-    # DOWN
-    # --------------------------------------------------------
-
-    down_trades = [
-        trade
-        for trade in trades
-        if trade.direction
-        == Direction.DOWN
-    ]
-
-    down_total = len(
-        down_trades
-    )
-
-    down_wins = sum(
-        1
-        for trade in down_trades
-        if trade.won
-    )
-
-    if down_total:
-
-        down_win_rate = (
-            down_wins
-            / down_total
-            * 100.0
-        )
-
-    else:
-
-        down_win_rate = 0.0
-
-    # --------------------------------------------------------
-    # Надёжность статистики
-    # --------------------------------------------------------
-
-    statistically_reliable = (
-        total
-        >= MINIMUM_SAMPLE_SIZE
-    )
-
     stats = BacktestStats(
         total=total,
         wins=wins,
@@ -474,85 +333,6 @@ def run_backtest(
         max_consecutive_losses=(
             max_loss_streak
         ),
-        up_total=up_total,
-        up_wins=up_wins,
-        up_win_rate=up_win_rate,
-        down_total=down_total,
-        down_wins=down_wins,
-        down_win_rate=down_win_rate,
-        statistically_reliable=(
-            statistically_reliable
-        ),
-        minimum_sample_size=(
-            MINIMUM_SAMPLE_SIZE
-        ),
     )
 
-    return (
-        trades,
-        stats,
-    )
-
-
-# ============================================================
-# ПРОВЕРКА НАДЁЖНОСТИ
-# ============================================================
-
-def is_backtest_reliable(
-    stats: BacktestStats,
-) -> bool:
-
-    if stats.total < (
-        stats.minimum_sample_size
-    ):
-
-        return False
-
-    if stats.win_rate <= 50.0:
-
-        return False
-
-    return True
-
-
-# ============================================================
-# ТЕКСТОВОЕ ПРЕДСТАВЛЕНИЕ
-# ============================================================
-
-def format_backtest_stats(
-    stats: BacktestStats,
-) -> str:
-
-    reliability = (
-        "RELIABLE"
-        if stats.statistically_reliable
-        else "INSUFFICIENT DATA"
-    )
-
-    return (
-        "Backtest statistics\n"
-        "-------------------\n"
-        f"Total: {stats.total}\n"
-        f"Wins: {stats.wins}\n"
-        f"Losses: {stats.losses}\n"
-        f"Win rate: "
-        f"{stats.win_rate:.2f}%\n"
-        f"Average score: "
-        f"{stats.average_score:.2f}%\n"
-        f"Max losing streak: "
-        f"{stats.max_consecutive_losses}\n"
-        "\n"
-        f"UP total: {stats.up_total}\n"
-        f"UP wins: {stats.up_wins}\n"
-        f"UP win rate: "
-        f"{stats.up_win_rate:.2f}%\n"
-        "\n"
-        f"DOWN total: {stats.down_total}\n"
-        f"DOWN wins: {stats.down_wins}\n"
-        f"DOWN win rate: "
-        f"{stats.down_win_rate:.2f}%\n"
-        "\n"
-        f"Reliability: {reliability}\n"
-        f"Required sample: "
-        f"{stats.minimum_sample_size}\n"
-    )
+    return trades, stats
