@@ -1,401 +1,463 @@
 from __future__ import annotations
-
 import logging
+import os
 from datetime import datetime
-
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    Float,
-    Integer,
-    String,
-    Text,
-    select,
-)
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    mapped_column,
-)
-
-from config import DATABASE_URL
-
-
+from typing import Any
+import aiosqlite
 logger = logging.getLogger("database")
-
-
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,
-    pool_pre_ping=True,
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "teyzus.db",
 )
-
-
-SessionLocal = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-)
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-class User(Base):
-
-    __tablename__ = "users"
-
-    id: Mapped[int] = mapped_column(
-        Integer,
-        primary_key=True,
-        autoincrement=True,
-    )
-
-    telegram_id: Mapped[int] = mapped_column(
-        Integer,
-        unique=True,
-        index=True,
-    )
-
-    username: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-    )
-
-    first_name: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-    )
-
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-
-
-class Signal(Base):
-
-    __tablename__ = "signals"
-
-    id: Mapped[int] = mapped_column(
-        Integer,
-        primary_key=True,
-        autoincrement=True,
-    )
-
-    symbol: Mapped[str] = mapped_column(
-        String(32),
-        index=True,
-    )
-
-    direction: Mapped[str] = mapped_column(
-        String(16),
-    )
-
-    score: Mapped[float] = mapped_column(
-        Float,
-    )
-
-    historical_probability: Mapped[float | None] = mapped_column(
-        Float,
-        nullable=True,
-    )
-
-    close_time: Mapped[str] = mapped_column(
-        String(64),
-    )
-
-    status: Mapped[str] = mapped_column(
-        String(32),
-        default="WAITING",
-        index=True,
-    )
-
-    result: Mapped[str | None] = mapped_column(
-        String(32),
-        nullable=True,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-
-
-class Application(Base):
-
-    __tablename__ = "applications"
-
-    id: Mapped[int] = mapped_column(
-        Integer,
-        primary_key=True,
-        autoincrement=True,
-    )
-
-    telegram_id: Mapped[int] = mapped_column(
-        Integer,
-        index=True,
-    )
-
-    text: Mapped[str] = mapped_column(
-        Text,
-    )
-
-    status: Mapped[str] = mapped_column(
-        String(32),
-        default="NEW",
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-
-
+def _database_path() -> str:
+    """
+    Для текущей версии используем SQLite.
+    Если DATABASE_URL начинается с sqlite://,
+    преобразуем его в обычный путь.
+    Примеры:
+        DATABASE_URL=teyzus.db
+        DATABASE_URL=sqlite:///teyzus.db
+    """
+    value = DATABASE_URL.strip()
+    if value.startswith("sqlite:///"):
+        return value.replace(
+            "sqlite:///",
+            "",
+            1,
+        )
+    if value.startswith("sqlite://"):
+        return value.replace(
+            "sqlite://",
+            "",
+            1,
+        )
+    return value
+DB_PATH = _database_path()
 async def init_db() -> None:
-
-    async with engine.begin() as connection:
-
-        await connection.run_sync(
-            Base.metadata.create_all
-        )
-
-    logger.info(
-        "Database initialized."
-    )
-
-
-async def get_active_users() -> list[int]:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(User.telegram_id)
-            .where(
-                User.is_active.is_(True)
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                telegram_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
             )
+            """
         )
-
-        return list(
-            result.scalars().all()
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                score REAL NOT NULL DEFAULT 0,
+                historical_probability REAL,
+                entry_price REAL,
+                exit_price REAL,
+                created_at TEXT NOT NULL,
+                close_time TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'CREATED',
+                warning_sent INTEGER NOT NULL DEFAULT 0,
+                result_checked INTEGER NOT NULL DEFAULT 0
+            )
+            """
         )
-
-
-async def get_or_create_user(
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_signals_close_time
+            ON signals(close_time)
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_signals_status
+            ON signals(status)
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signal_statistics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id INTEGER NOT NULL,
+                result TEXT NOT NULL,
+                entry_price REAL,
+                exit_price REAL,
+                checked_at TEXT NOT NULL,
+                FOREIGN KEY(signal_id)
+                    REFERENCES signals(id)
+            )
+            """
+        )
+        await db.commit()
+    logger.info(
+        "Database initialized: %s",
+        DB_PATH,
+    )
+# ============================================================
+# USERS
+# ============================================================
+async def register_user(
     telegram_id: int,
     username: str | None = None,
     first_name: str | None = None,
-) -> User:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(User)
-            .where(
-                User.telegram_id == telegram_id
-            )
-        )
-
-        user = result.scalar_one_or_none()
-
-        if user is None:
-
-            user = User(
-                telegram_id=telegram_id,
-                username=username,
-                first_name=first_name,
-                is_active=True,
-            )
-
-            session.add(user)
-
-        else:
-
-            user.username = username
-            user.first_name = first_name
-            user.is_active = True
-
-        await session.commit()
-
-        await session.refresh(user)
-
-        return user
-
-
-async def deactivate_user(
-    telegram_id: int,
 ) -> None:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(User)
-            .where(
-                User.telegram_id == telegram_id
+    now = datetime.utcnow().isoformat()
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        await db.execute(
+            """
+            INSERT INTO users (
+                telegram_id,
+                username,
+                first_name,
+                is_active,
+                is_admin,
+                created_at
             )
+            VALUES (?, ?, ?, 1, 0, ?)
+            ON CONFLICT(telegram_id)
+            DO UPDATE SET
+                username = excluded.username,
+                first_name = excluded.first_name,
+                is_active = 1
+            """,
+            (
+                telegram_id,
+                username,
+                first_name,
+                now,
+            ),
         )
-
-        user = result.scalar_one_or_none()
-
-        if user:
-
-            user.is_active = False
-
-            await session.commit()
-
-
+        await db.commit()
+async def set_user_active(
+    telegram_id: int,
+    active: bool,
+) -> None:
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        await db.execute(
+            """
+            UPDATE users
+            SET is_active = ?
+            WHERE telegram_id = ?
+            """,
+            (
+                1 if active else 0,
+                telegram_id,
+            ),
+        )
+        await db.commit()
+async def get_active_users() -> list[int]:
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        cursor = await db.execute(
+            """
+            SELECT telegram_id
+            FROM users
+            WHERE is_active = 1
+            """
+        )
+        rows = await cursor.fetchall()
+    return [
+        int(row[0])
+        for row in rows
+    ]
+async def get_all_users() -> list[int]:
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        cursor = await db.execute(
+            """
+            SELECT telegram_id
+            FROM users
+            """
+        )
+        rows = await cursor.fetchall()
+    return [
+        int(row[0])
+        for row in rows
+    ]
+# ============================================================
+# SIGNALS
+# ============================================================
 async def save_signal(
     symbol: str,
     direction: str,
     score: float,
     close_time: str,
     historical_probability: float | None = None,
+    entry_price: float | None = None,
 ) -> int:
-
-    async with SessionLocal() as session:
-
-        signal = Signal(
-            symbol=symbol,
-            direction=direction,
-            score=score,
-            close_time=close_time,
-            historical_probability=(
-                historical_probability
+    created_at = datetime.utcnow().isoformat()
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO signals (
+                symbol,
+                direction,
+                score,
+                historical_probability,
+                entry_price,
+                exit_price,
+                created_at,
+                close_time,
+                status,
+                warning_sent,
+                result_checked
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, NULL, ?, ?,
+                'CREATED', 0, 0
+            )
+            """,
+            (
+                symbol,
+                direction,
+                float(score),
+                historical_probability,
+                entry_price,
+                created_at,
+                close_time,
             ),
-            status="WAITING",
         )
-
-        session.add(signal)
-
-        await session.commit()
-
-        await session.refresh(signal)
-
-        return signal.id
-
-
+        await db.commit()
+        signal_id = cursor.lastrowid
+    if signal_id is None:
+        raise RuntimeError(
+            "Не удалось получить ID сигнала."
+        )
+    return int(signal_id)
 async def get_signal(
     signal_id: int,
-) -> Signal | None:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(Signal)
-            .where(
-                Signal.id == signal_id
-            )
+) -> dict[str, Any] | None:
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT *
+            FROM signals
+            WHERE id = ?
+            """,
+            (signal_id,),
         )
-
-        return result.scalar_one_or_none()
-
-
-async def update_signal_result(
+        row = await cursor.fetchone()
+    if row is None:
+        return None
+    return dict(row)
+async def get_pending_warnings() -> list[dict[str, Any]]:
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT *
+            FROM signals
+            WHERE warning_sent = 0
+              AND status IN (
+                  'CREATED',
+                  'WARNING_SENT'
+              )
+            ORDER BY close_time ASC
+            """
+        )
+        rows = await cursor.fetchall()
+    return [
+        dict(row)
+        for row in rows
+    ]
+async def mark_warning_sent(
     signal_id: int,
-    result_value: str,
-    won: bool,
 ) -> None:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(Signal)
-            .where(
-                Signal.id == signal_id
-            )
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        await db.execute(
+            """
+            UPDATE signals
+            SET
+                warning_sent = 1,
+                status = 'WARNING_SENT'
+            WHERE id = ?
+            """,
+            (signal_id,),
         )
-
-        signal = result.scalar_one_or_none()
-
-        if signal is None:
-            return
-
-        signal.result = result_value
-
-        signal.status = (
-            "WON"
-            if won
-            else "LOST"
+        await db.commit()
+async def get_pending_results() -> list[dict[str, Any]]:
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT *
+            FROM signals
+            WHERE result_checked = 0
+              AND status IN (
+                  'CREATED',
+                  'WARNING_SENT'
+              )
+            ORDER BY close_time ASC
+            """
         )
-
-        await session.commit()
-
-
-async def create_application(
-    telegram_id: int,
-    text: str,
-) -> int:
-
-    async with SessionLocal() as session:
-
-        application = Application(
-            telegram_id=telegram_id,
-            text=text,
-            status="NEW",
-        )
-
-        session.add(application)
-
-        await session.commit()
-
-        await session.refresh(
-            application
-        )
-
-        return application.id
-
-
-async def get_new_applications() -> list[Application]:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(Application)
-            .where(
-                Application.status == "NEW"
-            )
-            .order_by(
-                Application.created_at.asc()
-            )
-        )
-
-        return list(
-            result.scalars().all()
-        )
-
-
-async def update_application_status(
-    application_id: int,
-    status: str,
+        rows = await cursor.fetchall()
+    return [
+        dict(row)
+        for row in rows
+    ]
+async def save_signal_result(
+    signal_id: int,
+    result: str,
+    exit_price: float | None,
 ) -> None:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(Application)
-            .where(
-                Application.id == application_id
+    checked_at = datetime.utcnow().isoformat()
+    normalized = result.upper()
+    if normalized not in {
+        "WIN",
+        "LOSS",
+        "DRAW",
+        "ERROR",
+    }:
+        raise ValueError(
+            f"Unknown signal result: {result}"
+        )
+    if normalized == "WIN":
+        status = "WIN"
+    elif normalized == "LOSS":
+        status = "LOSS"
+    elif normalized == "DRAW":
+        status = "DRAW"
+    else:
+        status = "ERROR"
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        cursor = await db.execute(
+            """
+            SELECT entry_price
+            FROM signals
+            WHERE id = ?
+            """,
+            (signal_id,),
+        )
+        row = await cursor.fetchone()
+        entry_price = (
+            row[0]
+            if row is not None
+            else None
+        )
+        await db.execute(
+            """
+            UPDATE signals
+            SET
+                exit_price = ?,
+                status = ?,
+                result_checked = 1
+            WHERE id = ?
+            """,
+            (
+                exit_price,
+                status,
+                signal_id,
+            ),
+        )
+        await db.execute(
+            """
+            INSERT INTO signal_statistics (
+                signal_id,
+                result,
+                entry_price,
+                exit_price,
+                checked_at
             )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                signal_id,
+                normalized,
+                entry_price,
+                exit_price,
+                checked_at,
+            ),
         )
-
-        application = (
-            result.scalar_one_or_none()
+        await db.commit()
+# ============================================================
+# STATISTICS
+# ============================================================
+async def get_signal_statistics() -> dict[str, float | int]:
+    async with aiosqlite.connect(
+        DB_PATH
+    ) as db:
+        cursor = await db.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(
+                    CASE
+                        WHEN result = 'WIN'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS wins,
+                SUM(
+                    CASE
+                        WHEN result = 'LOSS'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS losses,
+                SUM(
+                    CASE
+                        WHEN result = 'DRAW'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS draws
+            FROM signal_statistics
+            """
         )
-
-        if application is None:
-            return
-
-        application.status = status
-
-        await session.commit()
+        row = await cursor.fetchone()
+    total = int(
+        row[0] or 0
+    )
+    wins = int(
+        row[1] or 0
+    )
+    losses = int(
+        row[2] or 0
+    )
+    draws = int(
+        row[3] or 0
+    )
+    decisive = (
+        wins + losses
+    )
+    if decisive:
+        win_rate = (
+            wins
+            / decisive
+            * 100
+        )
+    else:
+        win_rate = 0.0
+    return {
+        "total": total,
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "win_rate": win_rate,
+    }
