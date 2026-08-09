@@ -16,8 +16,18 @@ from database import (
     close_database,
     init_database,
 )
-from market_factory import create_market_client
-from scheduler import Scheduler
+from market_factory import (
+    create_market_client,
+)
+from scheduler import (
+    Scheduler,
+)
+from handlers.start import router as start_router
+from handlers.signals import router as signals_router
+from handlers.applications import (
+    router as applications_router,
+)
+from handlers.admin import router as admin_router
 # ============================================================
 # LOGGING
 # ============================================================
@@ -32,7 +42,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 # ============================================================
-# BOT
+# TELEGRAM BOT
 # ============================================================
 bot = Bot(
     token=BOT_TOKEN,
@@ -44,35 +54,17 @@ bot = Bot(
 # DISPATCHER
 # ============================================================
 dp = Dispatcher()
-# ============================================================
+# ------------------------------------------------------------
 # ROUTERS
-# ============================================================
-def register_routers() -> None:
-    """
-    Регистрирует Telegram routers ровно один раз.
-    ВАЖНО:
-    Не подключаем routers напрямую в нескольких местах.
-    """
-    from handlers.start import router as start_router
-    from handlers.signals import router as signals_router
-    from handlers.applications import router as applications_router
-    from handlers.admin import router as admin_router
-    routers = [
-        start_router,
-        signals_router,
-        applications_router,
-        admin_router,
-    ]
-    for router in routers:
-        # Если router уже находится внутри этого Dispatcher,
-        # повторно подключать его нельзя.
-        if router.parent_router is None:
-            dp.include_router(router)
-    logger.info(
-        "All Telegram routers registered."
-    )
-# Регистрируем routers один раз.
-register_routers()
+# ------------------------------------------------------------
+# Каждый router подключается РОВНО ОДИН РАЗ.
+dp.include_router(start_router)
+dp.include_router(signals_router)
+dp.include_router(applications_router)
+dp.include_router(admin_router)
+logger.info(
+    "All Telegram routers registered."
+)
 # ============================================================
 # MARKET
 # ============================================================
@@ -85,7 +77,7 @@ scheduler = Scheduler(
     market=market,
 )
 # ============================================================
-# BOT TASK
+# GLOBAL TASK
 # ============================================================
 bot_task: asyncio.Task | None = None
 # ============================================================
@@ -94,13 +86,20 @@ bot_task: asyncio.Task | None = None
 async def bot_polling() -> None:
     """
     Запускает Telegram polling.
+    Polling работает как отдельная asyncio-задача
+    внутри FastAPI lifespan.
     """
     logger.info(
         "Telegram polling starting..."
     )
     try:
+        # На Render Telegram webhook нам не нужен.
+        # Удаляем webhook перед запуском polling.
         await bot.delete_webhook(
             drop_pending_updates=True,
+        )
+        logger.info(
+            "Telegram webhook deleted."
         )
         await dp.start_polling(
             bot,
@@ -123,6 +122,20 @@ async def bot_polling() -> None:
 async def lifespan(
     app: FastAPI,
 ):
+    """
+    Полный жизненный цикл TEYZUS.
+    Startup:
+        1. Проверка конфигурации
+        2. База данных
+        3. Market client
+        4. Scheduler
+        5. Telegram polling
+    Shutdown:
+        1. Telegram
+        2. Scheduler
+        3. Market
+        4. Database
+    """
     global bot_task
     logger.info(
         "================================"
@@ -141,7 +154,7 @@ async def lifespan(
     )
     validate_config()
     logger.info(
-        "Configuration valid."
+        "Configuration validated."
     )
     # ========================================================
     # DATABASE
@@ -184,8 +197,20 @@ async def lifespan(
         name="teyzus_bot_polling",
     )
     logger.info(
+        "Telegram bot task created."
+    )
+    logger.info(
+        "================================"
+    )
+    logger.info(
         "TEYZUS started successfully."
     )
+    logger.info(
+        "================================"
+    )
+    # ========================================================
+    # APPLICATION RUNNING
+    # ========================================================
     try:
         yield
     finally:
@@ -209,7 +234,9 @@ async def lifespan(
             try:
                 await bot_task
             except asyncio.CancelledError:
-                pass
+                logger.info(
+                    "Telegram bot stopped."
+                )
             except Exception:
                 logger.exception(
                     "Telegram bot shutdown error."
@@ -222,6 +249,9 @@ async def lifespan(
         )
         try:
             await scheduler.stop()
+            logger.info(
+                "Scheduler stopped."
+            )
         except Exception:
             logger.exception(
                 "Scheduler shutdown error."
@@ -234,6 +264,9 @@ async def lifespan(
         )
         try:
             await market.close()
+            logger.info(
+                "Market client stopped."
+            )
         except Exception:
             logger.exception(
                 "Market client shutdown error."
@@ -246,27 +279,27 @@ async def lifespan(
         )
         try:
             await close_database()
+            logger.info(
+                "Database closed."
+            )
         except Exception:
             logger.exception(
                 "Database shutdown error."
             )
         # ====================================================
-        # BOT SESSION
+        # FINISHED
         # ====================================================
         logger.info(
-            "Closing Telegram bot session..."
+            "================================"
         )
-        try:
-            await bot.session.close()
-        except Exception:
-            logger.exception(
-                "Telegram bot session shutdown error."
-            )
         logger.info(
             "TEYZUS stopped."
         )
+        logger.info(
+            "================================"
+        )
 # ============================================================
-# FASTAPI APP
+# FASTAPI APPLICATION
 # ============================================================
 app = FastAPI(
     title="TEYZUS",
@@ -312,10 +345,36 @@ async def api_status():
         "telegram": telegram_status,
     }
 # ============================================================
-# MAIN
+# LOCAL / RENDER START
 # ============================================================
 if __name__ == "__main__":
     import uvicorn
+    logger.info(
+        "Starting Uvicorn..."
+    )
+    # ВАЖНО:
+    #
+    # НЕ:
+    #
+    # uvicorn.run(
+    #     "main:app",
+    #     ...
+    # )
+    #
+    # Потому что Render запускает:
+    #
+    # python main.py
+    #
+    # А строка "main:app" заставляет Uvicorn
+    # импортировать main.py повторно.
+    #
+    # Это приводит к повторному подключению
+    # Telegram routers и ошибке:
+    #
+    # RuntimeError:
+    # Router is already attached to Dispatcher
+    #
+    # Поэтому передаём уже существующий объект app.
     uvicorn.run(
         app,
         host=HOST,
