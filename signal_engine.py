@@ -11,33 +11,6 @@ from market import Candle
 from models import Direction
 
 
-# ============================================================
-# НАСТРОЙКИ SIGNAL ENGINE
-# ============================================================
-
-MIN_CANDLES = 100
-
-# Минимальная доля подтверждений.
-#
-# ВАЖНО:
-# Это НЕ вероятность выигрыша.
-# Это внутренняя техническая уверенность
-# модели по имеющимся индикаторам.
-MIN_TECHNICAL_SCORE = 80.0
-
-# Минимальное количество подтверждений.
-MIN_CONFIRMATIONS = 3
-
-# Максимальная разница между направлениями,
-# при которой мы считаем рынок слишком
-# конфликтным.
-MAX_CONFLICT_RATIO = 0.70
-
-
-# ============================================================
-# РЕЗУЛЬТАТ
-# ============================================================
-
 @dataclass(slots=True)
 class AnalysisResult:
 
@@ -51,73 +24,47 @@ class AnalysisResult:
 
     total_checks: int
 
-    # Дополнительная информация
-    bullish_checks: int = 0
-
-    bearish_checks: int = 0
-
-    rejected: bool = False
-
-    rejection_reason: str | None = None
-
-
-# ============================================================
-# SIGNAL ENGINE
-# ============================================================
 
 class SignalEngine:
+
+    """
+    Базовый технический анализ.
+
+    Используются:
+
+    - EMA
+    - RSI
+    - MACD
+    - Bollinger Bands
+
+    Важно:
+
+    Нейтральные индикаторы не дают
+    дополнительного подтверждения.
+    """
 
     def analyze(
         self,
         candles: list[Candle],
     ) -> AnalysisResult:
 
-        # ----------------------------------------------------
-        # 1. Проверка количества свечей
-        # ----------------------------------------------------
-
-        if len(candles) < MIN_CANDLES:
+        if len(candles) < 50:
 
             return AnalysisResult(
                 direction=None,
                 score=0.0,
                 reasons=[
-                    (
-                        "Недостаточно исторических "
-                        "данных для анализа."
-                    )
+                    "Недостаточно свечей."
                 ],
                 confirmations=0,
                 total_checks=0,
-                rejected=True,
-                rejection_reason=(
-                    "Недостаточно свечей."
-                ),
             )
 
-        # ----------------------------------------------------
-        # 2. Расчёт индикаторов
-        # ----------------------------------------------------
-
-        try:
-
-            indicators = calculate_indicators(
+        indicators = (
+            calculate_indicators(
                 candles
             )
-
-        except Exception as exc:
-
-            return AnalysisResult(
-                direction=None,
-                score=0.0,
-                reasons=[
-                    "Ошибка расчёта индикаторов."
-                ],
-                confirmations=0,
-                total_checks=0,
-                rejected=True,
-                rejection_reason=str(exc),
-            )
+        )
 
         bullish = 0
         bearish = 0
@@ -126,13 +73,15 @@ class SignalEngine:
 
         checks = 0
 
-        # ----------------------------------------------------
-        # 3. EMA TREND
-        # ----------------------------------------------------
+        # ====================================================
+        # EMA
+        # ====================================================
 
         if (
-            indicators.ema_fast is not None
-            and indicators.ema_slow is not None
+            indicators.ema_fast
+            is not None
+            and indicators.ema_slow
+            is not None
         ):
 
             checks += 1
@@ -145,7 +94,7 @@ class SignalEngine:
                 bullish += 1
 
                 reasons.append(
-                    "EMA подтверждает восходящий тренд."
+                    "EMA подтверждает рост."
                 )
 
             elif (
@@ -156,75 +105,58 @@ class SignalEngine:
                 bearish += 1
 
                 reasons.append(
-                    "EMA подтверждает нисходящий тренд."
+                    "EMA подтверждает снижение."
                 )
 
             else:
 
                 reasons.append(
-                    "EMA не показывает направления."
+                    "EMA нейтральна."
                 )
 
-        # ----------------------------------------------------
-        # 4. RSI
-        # ----------------------------------------------------
+        # ====================================================
+        # RSI
+        # ====================================================
 
         if indicators.rsi is not None:
 
             checks += 1
 
-            rsi = indicators.rsi
+            rsi = float(
+                indicators.rsi
+            )
 
-            if rsi < 30:
-
-                bullish += 1
-
-                reasons.append(
-                    f"RSI {rsi:.1f}: "
-                    "сильная перепроданность."
-                )
-
-            elif rsi > 70:
-
-                bearish += 1
-
-                reasons.append(
-                    f"RSI {rsi:.1f}: "
-                    "сильная перекупленность."
-                )
-
-            elif 40 <= rsi <= 60:
-
-                reasons.append(
-                    f"RSI {rsi:.1f}: "
-                    "нейтральная зона."
-                )
-
-            elif rsi < 40:
+            if rsi <= 30:
 
                 bullish += 1
 
                 reasons.append(
-                    f"RSI {rsi:.1f}: "
-                    "умеренная перепроданность."
+                    f"RSI перепродан: {rsi:.1f}."
                 )
 
-            elif rsi > 60:
+            elif rsi >= 70:
 
                 bearish += 1
 
                 reasons.append(
-                    f"RSI {rsi:.1f}: "
-                    "умеренная перекупленность."
+                    f"RSI перекуплен: {rsi:.1f}."
                 )
 
-        # ----------------------------------------------------
-        # 5. MACD
-        # ----------------------------------------------------
+            else:
+
+                reasons.append(
+                    f"RSI нейтрален: {rsi:.1f}."
+                )
+
+        # ====================================================
+        # MACD
+        # ====================================================
 
         if (
-            indicators.macd is not None
-            and indicators.macd_signal is not None
+            indicators.macd
+            is not None
+            and indicators.macd_signal
+            is not None
         ):
 
             checks += 1
@@ -237,7 +169,7 @@ class SignalEngine:
                 bullish += 1
 
                 reasons.append(
-                    "MACD подтверждает бычье движение."
+                    "MACD подтверждает рост."
                 )
 
             elif (
@@ -248,33 +180,37 @@ class SignalEngine:
                 bearish += 1
 
                 reasons.append(
-                    "MACD подтверждает медвежье движение."
+                    "MACD подтверждает снижение."
                 )
 
             else:
 
                 reasons.append(
-                    "MACD не показывает направления."
+                    "MACD нейтрален."
                 )
 
-        # ----------------------------------------------------
-        # 6. BOLLINGER BANDS
-        # ----------------------------------------------------
+        # ====================================================
+        # BOLLINGER
+        # ====================================================
 
         if (
-            indicators.bollinger_upper is not None
-            and indicators.bollinger_lower is not None
+            indicators.bollinger_upper
+            is not None
+            and indicators.bollinger_lower
+            is not None
         ):
 
             checks += 1
 
-            price = indicators.price
+            price = float(
+                indicators.price
+            )
 
-            upper = (
+            upper = float(
                 indicators.bollinger_upper
             )
 
-            lower = (
+            lower = float(
                 indicators.bollinger_lower
             )
 
@@ -297,12 +233,12 @@ class SignalEngine:
             else:
 
                 reasons.append(
-                    "Цена внутри диапазона Bollinger."
+                    "Цена внутри Bollinger."
                 )
 
-        # ----------------------------------------------------
-        # 7. НЕТ ИНДИКАТОРОВ
-        # ----------------------------------------------------
+        # ====================================================
+        # NO CHECKS
+        # ====================================================
 
         if checks == 0:
 
@@ -314,15 +250,11 @@ class SignalEngine:
                 ],
                 confirmations=0,
                 total_checks=0,
-                rejected=True,
-                rejection_reason=(
-                    "Нет доступных индикаторов."
-                ),
             )
 
-        # ----------------------------------------------------
-        # 8. ПОЛНЫЙ КОНФЛИКТ
-        # ----------------------------------------------------
+        # ====================================================
+        # CONFLICT
+        # ====================================================
 
         if bullish == bearish:
 
@@ -331,165 +263,49 @@ class SignalEngine:
                 score=0.0,
                 reasons=[
                     *reasons,
-                    (
-                        "Индикаторы не имеют "
-                        "единого направления."
-                    ),
+                    "Нет единого направления."
                 ],
                 confirmations=0,
                 total_checks=checks,
-                bullish_checks=bullish,
-                bearish_checks=bearish,
-                rejected=True,
-                rejection_reason=(
-                    "Конфликт направлений."
-                ),
             )
 
-        # ----------------------------------------------------
-        # 9. ОПРЕДЕЛЯЕМ НАПРАВЛЕНИЕ
-        # ----------------------------------------------------
+        # ====================================================
+        # UP
+        # ====================================================
 
         if bullish > bearish:
 
-            direction = Direction.UP
+            score = (
+                bullish
+                / checks
+                * 100.0
+            )
 
-            confirmations = bullish
+            return AnalysisResult(
+                direction=Direction.UP,
+                score=score,
+                reasons=reasons,
+                confirmations=bullish,
+                total_checks=checks,
+            )
 
-        else:
-
-            direction = Direction.DOWN
-
-            confirmations = bearish
-
-        # ----------------------------------------------------
-        # 10. ТЕХНИЧЕСКИЙ SCORE
-        # ----------------------------------------------------
+        # ====================================================
+        # DOWN
+        # ====================================================
 
         score = (
-            confirmations
+            bearish
             / checks
             * 100.0
         )
 
-        # ----------------------------------------------------
-        # 11. ПРОВЕРКА КОНФЛИКТА
-        # ----------------------------------------------------
-
-        dominant = max(
-            bullish,
-            bearish,
-        )
-
-        conflict_ratio = (
-            dominant / checks
-        )
-
-        if (
-            conflict_ratio
-            < MAX_CONFLICT_RATIO
-        ):
-
-            return AnalysisResult(
-                direction=None,
-                score=score,
-                reasons=[
-                    *reasons,
-                    (
-                        "Слишком сильный конфликт "
-                        "между индикаторами."
-                    ),
-                ],
-                confirmations=confirmations,
-                total_checks=checks,
-                bullish_checks=bullish,
-                bearish_checks=bearish,
-                rejected=True,
-                rejection_reason=(
-                    "Сильный конфликт индикаторов."
-                ),
-            )
-
-        # ----------------------------------------------------
-        # 12. МАЛО ПОДТВЕРЖДЕНИЙ
-        # ----------------------------------------------------
-
-        if confirmations < MIN_CONFIRMATIONS:
-
-            return AnalysisResult(
-                direction=None,
-                score=score,
-                reasons=[
-                    *reasons,
-                    (
-                        "Недостаточно подтверждений "
-                        "для безопасной выдачи сигнала."
-                    ),
-                ],
-                confirmations=confirmations,
-                total_checks=checks,
-                bullish_checks=bullish,
-                bearish_checks=bearish,
-                rejected=True,
-                rejection_reason=(
-                    "Недостаточно подтверждений."
-                ),
-            )
-
-        # ----------------------------------------------------
-        # 13. НИЗКИЙ TECHNICAL SCORE
-        # ----------------------------------------------------
-
-        if score < MIN_TECHNICAL_SCORE:
-
-            return AnalysisResult(
-                direction=None,
-                score=score,
-                reasons=[
-                    *reasons,
-                    (
-                        "Техническая уверенность "
-                        "ниже установленного порога."
-                    ),
-                ],
-                confirmations=confirmations,
-                total_checks=checks,
-                bullish_checks=bullish,
-                bearish_checks=bearish,
-                rejected=True,
-                rejection_reason=(
-                    "Низкий технический score."
-                ),
-            )
-
-        # ----------------------------------------------------
-        # 14. СИГНАЛ ПРОШЁЛ
-        # ----------------------------------------------------
-
-        reasons.insert(
-            0,
-            (
-                "Сигнал имеет "
-                f"{confirmations}/{checks} "
-                "технических подтверждений."
-            ),
-        )
-
         return AnalysisResult(
-            direction=direction,
+            direction=Direction.DOWN,
             score=score,
             reasons=reasons,
-            confirmations=confirmations,
+            confirmations=bearish,
             total_checks=checks,
-            bullish_checks=bullish,
-            bearish_checks=bearish,
-            rejected=False,
-            rejection_reason=None,
         )
 
-
-# ============================================================
-# SINGLETON
-# ============================================================
 
 signal_engine = SignalEngine()
