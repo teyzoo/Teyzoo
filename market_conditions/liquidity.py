@@ -1,33 +1,47 @@
 from __future__ import annotations
+
 from market import Candle
-def liquidity_is_acceptable(
+
+
+def calculate_liquidity(
     candles: list[Candle],
-    period: int = 20,
-    minimum_ratio: float = 0.15,
-) -> bool:
-    if len(candles) < period:
-        return False
+) -> float:
+
+    if not candles:
+        return 0.0
+
     volumes = [
         candle.volume
-        for candle in candles[-period:]
+        for candle in candles
         if candle.volume > 0
     ]
-    # Некоторые FX providers не дают volume.
-    # В таком случае не объявляем рынок
-    # плохим только из-за отсутствия volume.
+
     if not volumes:
-        return True
-    average_volume = (
-        sum(volumes)
-        / len(volumes)
+        return 50.0
+
+    recent = volumes[-20:]
+
+    average = (
+        sum(recent)
+        / len(recent)
     )
-    if average_volume <= 0:
-        return False
-    current_volume = (
-        candles[-1].volume
+
+    if average <= 0:
+        return 0.0
+
+    current = volumes[-1]
+
+    ratio = (
+        current
+        / average
     )
-    return (
-        current_volume
-        >= average_volume
-        * minimum_ratio
+
+    score = min(
+        100.0,
+        ratio * 50.0,
+    )
+
+    return max(
+        0.0,
+        score,
     )
