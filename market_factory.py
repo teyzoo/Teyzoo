@@ -12,20 +12,20 @@ from market import (
 
 
 def create_market_client() -> MarketClient:
-
     if not MARKET_API_URL:
         raise RuntimeError(
-            "MARKET_API_URL не задан."
+            "MARKET_API_URL не установлен."
         )
 
     provider = HTTPMarketProvider(
         base_url=MARKET_API_URL,
         api_key=(
             MARKET_API_KEY
-            or None
+            if MARKET_API_KEY
+            else None
         ),
     )
 
     return MarketClient(
-        provider=provider
+        provider=provider,
     )
