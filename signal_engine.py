@@ -5,15 +5,20 @@ from dataclasses import dataclass
 from indicators import (
     calculate_indicators,
 )
+
 from market import Candle
+
 from models import Direction
 
 
 @dataclass(slots=True)
 class AnalysisResult:
     direction: Direction | None
+
     score: float
+
     reasons: list[str]
+
     confirmations: int
     total_checks: int
 
@@ -50,6 +55,7 @@ class SignalEngine:
 
         checks = 0
 
+        # EMA
         if (
             indicators.ema_fast
             is not None
@@ -81,6 +87,7 @@ class SignalEngine:
                     "EMA: bearish"
                 )
 
+        # RSI
         if indicators.rsi is not None:
 
             checks += 1
@@ -101,9 +108,9 @@ class SignalEngine:
                     "RSI: overbought"
                 )
 
+        # MACD
         if (
-            indicators.macd
-            is not None
+            indicators.macd is not None
             and indicators.macd_signal
             is not None
         ):
@@ -132,6 +139,7 @@ class SignalEngine:
                     "MACD: bearish"
                 )
 
+        # Bollinger
         if (
             indicators.bollinger_upper
             is not None
@@ -169,7 +177,8 @@ class SignalEngine:
                 direction=None,
                 score=0.0,
                 reasons=[
-                    "Индикаторы не рассчитаны."
+                    "Индикаторы "
+                    "не рассчитаны."
                 ],
                 confirmations=0,
                 total_checks=0,
@@ -181,7 +190,8 @@ class SignalEngine:
                 direction=None,
                 score=0.0,
                 reasons=[
-                    "Индикаторы конфликтуют."
+                    "Индикаторы дают "
+                    "конфликтующий сигнал."
                 ],
                 confirmations=0,
                 total_checks=checks,
@@ -189,25 +199,29 @@ class SignalEngine:
 
         if bullish > bearish:
 
+            score = (
+                bullish
+                / checks
+                * 100
+            )
+
             return AnalysisResult(
                 direction=Direction.UP,
-                score=(
-                    bullish
-                    / checks
-                    * 100
-                ),
+                score=score,
                 reasons=reasons,
                 confirmations=bullish,
                 total_checks=checks,
             )
 
+        score = (
+            bearish
+            / checks
+            * 100
+        )
+
         return AnalysisResult(
             direction=Direction.DOWN,
-            score=(
-                bearish
-                / checks
-                * 100
-            ),
+            score=score,
             reasons=reasons,
             confirmations=bearish,
             total_checks=checks,
