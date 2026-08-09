@@ -49,13 +49,23 @@ async def send_signal_warning(
     signal,
 ) -> None:
 
+    close_time = format_moscow_time(
+        __import__(
+            "time_utils"
+        ).parse_moscow_time(
+            signal.close_time,
+            reference=signal.created_at,
+        )
+    )
+
     text = (
         "⚠️ <b>TEYZUS WARNING</b>\n\n"
         f"💱 Пара: "
         f"<b>{signal.symbol}</b>\n\n"
         f"🎯 Направление: "
         f"<b>{signal.direction}</b>\n\n"
-        "⏳ <b>Сигнал через 2 минуты.</b>\n\n"
+        f"⏳ <b>Сигнал через 2 минуты.</b>\n"
+        f"🕐 Закрытие: <b>{close_time}</b>\n\n"
         "Подготовьтесь к открытию сделки."
     )
 
