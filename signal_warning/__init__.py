@@ -4,6 +4,7 @@ from signal_warning.scheduler import (
     warning_scheduler,
 )
 
+
 __all__ = [
     "warning_scheduler",
 ]
