@@ -27,7 +27,9 @@ DEFAULT_PAIRS = [
 
 @dataclass(slots=True)
 class PairAnalysis:
+
     symbol: str
+
     result: QualityResult
 
 
@@ -38,7 +40,9 @@ class PairSelector:
         market: MarketClient,
         quality_filter: QualityFilter,
     ):
+
         self.market = market
+
         self.quality_filter = (
             quality_filter
         )
@@ -67,9 +71,11 @@ class PairSelector:
             candles,
         ) in timeframe_data.items():
 
-            analysis = analyze_timeframe(
-                timeframe,
-                candles,
+            analysis = (
+                analyze_timeframe(
+                    timeframe,
+                    candles,
+                )
             )
 
             analyses.append(
@@ -98,29 +104,32 @@ class PairSelector:
             else DEFAULT_PAIRS
         )
 
-        async def safe_analyze(
-            symbol: str,
-        ) -> PairAnalysis | None:
+        candidates: list[
+            PairAnalysis
+        ] = []
 
-            try:
-                return await self.analyze_pair(
-                    symbol
-                )
-            except Exception:
-                return None
+        tasks = [
+            self.analyze_pair(
+                symbol
+            )
+            for symbol in symbols
+        ]
 
         results = await asyncio.gather(
-            *(
-                safe_analyze(symbol)
-                for symbol in symbols
-            )
+            *tasks,
+            return_exceptions=True,
         )
 
-        candidates = [
-            result
-            for result in results
-            if result is not None
-        ]
+        for result in results:
+
+            if isinstance(
+                result,
+                PairAnalysis,
+            ):
+
+                candidates.append(
+                    result
+                )
 
         accepted = [
             item
