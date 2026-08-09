@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-from config import (
-    MARKET_API_KEY,
-    MARKET_API_URL,
-)
-
 from market import (
     HTTPMarketProvider,
     MarketClient,
+)
+
+from config import (
+    MARKET_API_KEY,
+    MARKET_API_URL,
 )
 
 
 def create_market_client() -> MarketClient:
 
     if not MARKET_API_URL:
+
         raise RuntimeError(
-            "MARKET_API_URL не задан "
-            "в переменных окружения."
+            "MARKET_API_URL не задан."
         )
 
     provider = HTTPMarketProvider(
