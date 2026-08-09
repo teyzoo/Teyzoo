@@ -5,18 +5,15 @@ import logging
 
 from aiogram import Bot
 
+from database import (
+    get_pending_signals,
+)
 from market import MarketClient
-
 from signal_result_checker import (
     SignalResultChecker,
 )
-
 from signal_result_handler import (
     handle_signal_result,
-)
-
-from database import (
-    get_pending_signals,
 )
 
 
@@ -82,7 +79,7 @@ async def check_results_once(
 async def result_checker_loop(
     bot: Bot,
     market: MarketClient,
-    interval: int = 30,
+    interval: int = 15,
 ) -> None:
 
     logger.info(
