@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
 
 from aiogram import Bot
 
 from database import (
     get_pending_signals,
 )
-
 from signal_notifications import (
     send_signal_warning,
 )
-
 from time_utils import (
-    MOSCOW,
+    now_moscow,
+    parse_moscow_time,
     signal_warning_time,
 )
 
@@ -27,7 +25,7 @@ logger = logging.getLogger(
 
 async def warning_scheduler(
     bot: Bot,
-    interval: int = 15,
+    interval: int = 10,
 ) -> None:
 
     logger.info(
@@ -40,9 +38,7 @@ async def warning_scheduler(
 
         try:
 
-            now = datetime.now(
-                MOSCOW
-            )
+            now = now_moscow()
 
             signals = (
                 await get_pending_signals()
@@ -56,18 +52,9 @@ async def warning_scheduler(
                 try:
 
                     close_time = (
-                        datetime.strptime(
+                        parse_moscow_time(
                             signal.close_time,
-                            "%H:%M МСК",
-                        )
-                    )
-
-                    close_time = (
-                        close_time.replace(
-                            year=now.year,
-                            month=now.month,
-                            day=now.day,
-                            tzinfo=MOSCOW,
+                            reference=signal.created_at,
                         )
                     )
 
@@ -89,7 +76,9 @@ async def warning_scheduler(
                             signal,
                         )
 
-                        sent.add(signal.id)
+                        sent.add(
+                            signal.id
+                        )
 
                 except Exception:
 
