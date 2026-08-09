@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -8,28 +7,15 @@ from datetime import datetime, timezone
 import aiohttp
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("market")
 
 
 class MarketDataError(Exception):
-    """Ошибка получения рыночных данных."""
+    pass
 
 
 @dataclass(slots=True)
 class Candle:
-    """
-    Одна свеча.
-
-    timestamp:
-        Время открытия свечи в UTC.
-
-    open/high/low/close:
-        OHLC значения.
-
-    volume:
-        Объём, если источник его предоставляет.
-    """
-
     timestamp: datetime
     open: float
     high: float
@@ -40,10 +26,6 @@ class Candle:
 
 @dataclass(slots=True)
 class Quote:
-    """
-    Текущая котировка.
-    """
-
     symbol: str
     bid: float
     ask: float
@@ -51,196 +33,318 @@ class Quote:
 
     @property
     def mid(self) -> float:
-        return (self.bid + self.ask) / 2
-
-    @property
-    def spread(self) -> float:
-        return self.ask - self.bid
+        return (
+            self.bid + self.ask
+        ) / 2
 
 
-class MarketClient:
+class MarketProvider:
     """
-    Единая точка доступа к рыночным данным.
+    Интерфейс источника рынка.
 
-    Остальной код бота не должен знать,
-    откуда именно пришли котировки.
-
-    Когда подключим конкретного поставщика,
-    поменяется в основном этот слой.
+    Конкретный API подключается
+    отдельным классом.
     """
 
-    def __init__(self) -> None:
-        self.session: aiohttp.ClientSession | None = None
+    async def get_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+    ) -> list[Candle]:
 
-    async def start(self) -> None:
-        if self.session is not None:
-            return
+        raise NotImplementedError
 
-        timeout = aiohttp.ClientTimeout(
-            total=15,
-            connect=5,
-            sock_read=10,
+
+class HTTPMarketProvider(
+    MarketProvider
+):
+    """
+    Универсальный HTTP provider.
+
+    Формат ожидаемого ответа:
+
+    {
+        "candles": [
+            {
+                "timestamp": 1234567890,
+                "open": 1.1,
+                "high": 1.2,
+                "low": 1.0,
+                "close": 1.15,
+                "volume": 123
+            }
+        ]
+    }
+
+    Конкретный URL задаётся через
+    MARKET_API_URL.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str | None = None,
+    ):
+
+        self.base_url = (
+            base_url.rstrip("/")
         )
 
-        self.session = aiohttp.ClientSession(
-            timeout=timeout,
-            headers={
-                "User-Agent": (
-                    "TEYZUS-Signal-Bot/1.0"
+        self.api_key = api_key
+
+        self.session: (
+            aiohttp.ClientSession | None
+        ) = None
+
+    async def start(self):
+
+        if self.session:
+            return
+
+        self.session = (
+            aiohttp.ClientSession(
+                timeout=(
+                    aiohttp.ClientTimeout(
+                        total=15
+                    )
                 )
-            },
+            )
         )
 
-        logger.info(
-            "MarketClient started."
-        )
+    async def close(self):
 
-    async def close(self) -> None:
-        if self.session is None:
-            return
+        if self.session:
 
-        await self.session.close()
-        self.session = None
+            await self.session.close()
 
-        logger.info(
-            "MarketClient closed."
-        )
+            self.session = None
 
-    def _ensure_session(self) -> aiohttp.ClientSession:
-        if self.session is None:
+    async def get_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+    ) -> list[Candle]:
+
+        if not self.session:
+
             raise MarketDataError(
-                "MarketClient ещё не запущен."
+                "Market provider не запущен."
             )
 
-        return self.session
+        params = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "limit": limit,
+        }
 
-    @staticmethod
-    def normalize_symbol(
-        symbol: str,
-    ) -> str:
-        """
-        EUR/USD -> EURUSD
+        headers = {}
 
-        EURUSD -> EURUSD
-        eur/usd -> EURUSD
-        """
+        if self.api_key:
 
-        return (
-            symbol
-            .strip()
-            .upper()
-            .replace("/", "")
-            .replace("-", "")
-            .replace("_", "")
+            headers["Authorization"] = (
+                f"Bearer {self.api_key}"
+            )
+
+        try:
+
+            async with self.session.get(
+                self.base_url,
+                params=params,
+                headers=headers,
+            ) as response:
+
+                if response.status != 200:
+
+                    text = (
+                        await response.text()
+                    )
+
+                    raise MarketDataError(
+                        "Market API HTTP "
+                        f"{response.status}: "
+                        f"{text[:300]}"
+                    )
+
+                data = (
+                    await response.json()
+                )
+
+        except aiohttp.ClientError as exc:
+
+            raise MarketDataError(
+                "Ошибка подключения "
+                "к market API."
+            ) from exc
+
+        except TimeoutError as exc:
+
+            raise MarketDataError(
+                "Market API timeout."
+            ) from exc
+
+        return self._parse_candles(
+            data
         )
 
     @staticmethod
-    def utc_now() -> datetime:
-        return datetime.now(timezone.utc)
+    def _parse_candles(
+        data,
+    ) -> list[Candle]:
 
-    async def request_json(
-        self,
-        url: str,
-        *,
-        params: dict | None = None,
-    ) -> dict | list:
-        """
-        Универсальный GET JSON.
+        if isinstance(data, dict):
 
-        Добавлены:
-        - timeout;
-        - обработка HTTP ошибок;
-        - обработка JSON ошибок;
-        - повторные попытки.
-        """
+            raw_candles = data.get(
+                "candles"
+            )
 
-        session = self._ensure_session()
+        elif isinstance(data, list):
 
-        last_error: Exception | None = None
+            raw_candles = data
 
-        for attempt in range(3):
+        else:
+
+            raw_candles = None
+
+        if not isinstance(
+            raw_candles,
+            list,
+        ):
+
+            raise MarketDataError(
+                "Не найден массив candles."
+            )
+
+        candles: list[Candle] = []
+
+        for item in raw_candles:
 
             try:
 
-                async with session.get(
-                    url,
-                    params=params,
-                ) as response:
+                timestamp = item[
+                    "timestamp"
+                ]
 
-                    if response.status == 429:
-                        wait_time = 2 ** attempt
+                if isinstance(
+                    timestamp,
+                    (int, float),
+                ):
 
-                        logger.warning(
-                            "Rate limit. "
-                            "Retry in %s sec.",
-                            wait_time,
+                    timestamp = (
+                        datetime.fromtimestamp(
+                            timestamp,
+                            tz=timezone.utc,
                         )
-
-                        await asyncio.sleep(
-                            wait_time
-                        )
-
-                        continue
-
-                    if response.status >= 400:
-                        body = await response.text()
-
-                        raise MarketDataError(
-                            f"HTTP {response.status}: "
-                            f"{body[:300]}"
-                        )
-
-                    try:
-                        return await response.json()
-
-                    except Exception as exc:
-                        raise MarketDataError(
-                            "Источник вернул "
-                            "некорректный JSON."
-                        ) from exc
-
-            except asyncio.CancelledError:
-                raise
-
-            except Exception as exc:
-
-                last_error = exc
-
-                logger.warning(
-                    "Market request failed "
-                    "(attempt %s/3): %s",
-                    attempt + 1,
-                    exc,
-                )
-
-                if attempt < 2:
-                    await asyncio.sleep(
-                        1 + attempt
                     )
 
-        raise MarketDataError(
-            "Не удалось получить рыночные данные."
-        ) from last_error
+                else:
 
-    async def get_quote(
+                    timestamp = (
+                        datetime.fromisoformat(
+                            str(timestamp)
+                            .replace(
+                                "Z",
+                                "+00:00",
+                            )
+                        )
+                    )
+
+                candle = Candle(
+                    timestamp=timestamp,
+                    open=float(
+                        item["open"]
+                    ),
+                    high=float(
+                        item["high"]
+                    ),
+                    low=float(
+                        item["low"]
+                    ),
+                    close=float(
+                        item["close"]
+                    ),
+                    volume=float(
+                        item.get(
+                            "volume",
+                            0,
+                        )
+                    ),
+                )
+
+                if not (
+                    candle.low
+                    <= candle.open
+                    <= candle.high
+                ):
+
+                    continue
+
+                if not (
+                    candle.low
+                    <= candle.close
+                    <= candle.high
+                ):
+
+                    continue
+
+                candles.append(
+                    candle
+                )
+
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+            ):
+
+                continue
+
+        candles.sort(
+            key=lambda candle:
+                candle.timestamp
+        )
+
+        if len(candles) < 20:
+
+            raise MarketDataError(
+                "Получено слишком мало "
+                "корректных свечей."
+            )
+
+        return candles
+
+
+class MarketClient:
+
+    def __init__(
         self,
-        symbol: str,
-    ) -> Quote:
-        """
-        Получить текущую котировку.
+        provider: MarketProvider,
+    ):
 
-        Реальный endpoint конкретного
-        поставщика подключим следующим шагом.
-        """
+        self.provider = provider
 
-        normalized = self.normalize_symbol(
-            symbol
+    async def start(self):
+
+        start = getattr(
+            self.provider,
+            "start",
+            None,
         )
 
-        raise MarketDataError(
-            "Provider для котировок "
-            f"{normalized} ещё не подключён."
+        if start:
+            await start()
+
+    async def close(self):
+
+        close = getattr(
+            self.provider,
+            "close",
+            None,
         )
+
+        if close:
+            await close()
 
     async def get_candles(
         self,
@@ -248,45 +352,34 @@ class MarketClient:
         timeframe: str = "1m",
         limit: int = 200,
     ) -> list[Candle]:
-        """
-        Получить исторические свечи.
-
-        timeframe:
-            1m
-            5m
-            15m
-            30m
-            1h
-            и т.д.
-
-        limit:
-            Количество свечей.
-
-        Пока конкретный provider
-        не подключён, метод намеренно
-        НЕ генерирует фальшивые данные.
-        """
 
         if limit < 20:
+
             raise ValueError(
-                "Для анализа нужно минимум "
-                "20 свечей."
+                "Минимум 20 свечей."
             )
 
         if limit > 5000:
+
             raise ValueError(
-                "Слишком большое количество свечей."
+                "Максимум 5000 свечей."
             )
 
-        normalized = self.normalize_symbol(
-            symbol
+        candles = (
+            await self.provider.get_candles(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit,
+            )
         )
 
-        raise MarketDataError(
-            "Provider для исторических свечей "
-            f"{normalized} ({timeframe}) "
-            "ещё не подключён."
-        )
+        if len(candles) < 20:
+
+            raise MarketDataError(
+                "Недостаточно свечей."
+            )
+
+        return candles
 
     async def get_multi_timeframe(
         self,
@@ -297,29 +390,23 @@ class MarketClient:
             "15m",
         ),
         limit: int = 200,
-    ) -> dict[str, list[Candle]]:
-        """
-        Получить несколько таймфреймов.
+    ) -> dict[
+        str,
+        list[Candle],
+    ]:
 
-        Это понадобится для фильтрации:
-        например, нельзя выдавать сигнал,
-        если 1m показывает рост, а 15m
-        находится в сильном нисходящем тренде.
-        """
-
-        result: dict[str, list[Candle]] = {}
+        result = {}
 
         for timeframe in timeframes:
 
-            candles = await self.get_candles(
-                symbol=symbol,
-                timeframe=timeframe,
-                limit=limit,
+            candles = (
+                await self.get_candles(
+                    symbol,
+                    timeframe,
+                    limit,
+                )
             )
 
             result[timeframe] = candles
 
         return result
-
-
-market_client = MarketClient()
