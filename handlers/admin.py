@@ -1,125 +1,59 @@
 from __future__ import annotations
 
-import logging
-
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from config import OWNER_ID
-from database import (
-    get_signal_statistics,
-)
+from config import ADMIN_IDS, OWNER_ID
+from database import get_signal_statistics
 
 
-router = Router(
-    name="admin"
-)
-
-logger = logging.getLogger(
-    "handlers.admin"
-)
+router = Router(name="admin")
 
 
-def is_owner(
+def is_admin(
     message: Message,
 ) -> bool:
+    if message.from_user is None:
+        return False
 
-    return (
-        message.from_user is not None
-        and message.from_user.id == OWNER_ID
-    )
+    user_id = message.from_user.id
+
+    if OWNER_ID is not None and user_id == OWNER_ID:
+        return True
+
+    return user_id in ADMIN_IDS
 
 
-@router.message(
-    Command("admin")
-)
+@router.message(Command("admin"))
 async def admin_handler(
     message: Message,
 ):
-
-    if not is_owner(message):
-
+    if not is_admin(message):
         await message.answer(
-            "⛔ <b>Доступ запрещён.</b>"
+            "⛔ Доступ запрещён."
         )
 
         return
 
-    try:
+    stats = await get_signal_statistics()
 
-        stats = (
-            await get_signal_statistics()
-        )
-
-        total = int(
-            stats.get(
-                "total",
-                0,
-            )
-        )
-
-        wins = int(
-            stats.get(
-                "wins",
-                0,
-            )
-        )
-
-        losses = int(
-            stats.get(
-                "losses",
-                0,
-            )
-        )
-
-        pending = int(
-            stats.get(
-                "pending",
-                0,
-            )
-        )
-
-        winrate = float(
-            stats.get(
-                "winrate",
-                0.0,
-            )
-        )
-
-        completed = (
-            wins + losses
-        )
-
-        text = (
+    await message.answer(
+        (
             "👑 <b>TEYZUS ADMIN</b>\n\n"
             f"📊 Всего сигналов: "
-            f"<b>{total}</b>\n\n"
-            f"📁 Завершено: "
-            f"<b>{completed}</b>\n"
+            f"<b>{stats['total']}</b>\n"
+            f"📦 Завершено: "
+            f"<b>{stats['finished']}</b>\n\n"
             f"🟢 WIN: "
-            f"<b>{wins}</b>\n"
+            f"<b>{stats['wins']}</b>\n"
             f"🔴 LOSS: "
-            f"<b>{losses}</b>\n"
+            f"<b>{stats['losses']}</b>\n"
+            f"⚪ DRAW: "
+            f"<b>{stats['draws']}</b>\n"
             f"⏳ Pending: "
-            f"<b>{pending}</b>\n\n"
+            f"<b>{stats['pending']}</b>\n\n"
             f"🎯 WIN RATE: "
-            f"<b>{winrate:.2f}%</b>"
+            f"<b>{stats['win_rate']:.2f}%</b>"
         )
-
-        await message.answer(
-            text
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Could not load admin statistics."
-        )
-
-        await message.answer(
-            (
-                "⚠️ <b>Не удалось загрузить "
-                "статистику.</b>"
-            )
-        )
+    )
