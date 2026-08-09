@@ -1,9 +1,17 @@
 from aiogram import Router, F
 from aiogram.types import Message
 
-from config import TIMEZONE
-from market import market_client, MarketDataError
+from database import (
+    get_signal_statistics,
+)
+
+from market import (
+    market_client,
+    MarketDataError,
+)
+
 from predictor import predictor
+
 from filters import passes_filter
 
 
@@ -18,45 +26,87 @@ async def get_signal(
 ):
 
     await message.answer(
-        "🔎 Анализирую рынок...\n\n"
-        "⏳ Проверяю доступные данные."
+        "🔎 <b>АНАЛИЗ РЫНКА</b>\n\n"
+        "Проверяю доступные данные...\n"
+        "⏳ Пожалуйста, подождите.",
+        parse_mode="HTML",
     )
 
     try:
-        candles = await market_client.get_candles(
-            "EUR/USD",
-            limit=200,
+
+        candles = (
+            await market_client.get_candles(
+                "EUR/USD",
+                timeframe="1m",
+                limit=200,
+            )
         )
 
     except MarketDataError:
+
         await message.answer(
             "⛔ <b>NO SIGNAL</b>\n\n"
-            "Источник рыночных данных пока "
-            "не подключён.\n\n"
-            "Бот не будет выдавать выдуманный "
-            "прогноз без реальных данных.",
+            "Актуальные рыночные данные "
+            "сейчас недоступны.\n\n"
+            "❌ Бот не создаёт сигнал "
+            "на основе выдуманных данных.",
             parse_mode="HTML",
         )
+
         return
 
     prediction = predictor.predict(
         candles
     )
 
-    if not passes_filter(prediction):
+    if not passes_filter(
+        prediction
+    ):
+
         await message.answer(
             "⛔ <b>NO SIGNAL</b>\n\n"
-            "Подходящей сделки с достаточной "
-            "уверенностью не найдено.",
+            "Подходящая сделка не прошла "
+            "строгую систему фильтрации.",
             parse_mode="HTML",
         )
+
         return
 
     await message.answer(
         "🚨 <b>SIGNAL</b>\n\n"
         "💱 Пара: EUR/USD\n"
-        f"🎯 Оценка: {prediction.score:.1f}%\n\n"
-        "⚠️ Это статистический прогноз, "
-        "а не гарантия результата.",
+        f"🎯 Quality score: "
+        f"{prediction.score:.1f}%\n\n"
+        "⚠️ Историческая вероятность "
+        "будет показана только после "
+        "достаточного количества "
+        "результатов backtest.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(
+    F.text == "📈 Статистика"
+)
+async def statistics(
+    message: Message,
+):
+
+    stats = (
+        await get_signal_statistics()
+    )
+
+    await message.answer(
+        "📈 <b>СТАТИСТИКА СИГНАЛОВ</b>\n\n"
+        f"📊 Всего: "
+        f"<b>{stats['total']}</b>\n"
+        f"✅ Побед: "
+        f"<b>{stats['wins']}</b>\n"
+        f"❌ Поражений: "
+        f"<b>{stats['losses']}</b>\n"
+        f"🎯 Win Rate: "
+        f"<b>{stats['win_rate']:.2f}%</b>\n\n"
+        "Статистика строится только "
+        "по сохранённым результатам.",
         parse_mode="HTML",
     )
