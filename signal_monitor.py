@@ -2,36 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
-
-from aiogram import Bot
 
 from database import (
-    mark_signal_result,
+    get_pending_signals,
+    get_signal,
+    update_signal_result,
 )
 
-from market import (
-    MarketClient,
-)
-
-from result_checker import (
-    check_tracked_signal,
-)
-
-from signal_notifications import (
-    send_warning,
-)
-
-from signal_result_notifications import (
-    send_result,
-)
-
+from market import MarketClient
+from models import Direction
 from signal_tracker import (
-    signal_tracker,
-)
-
-from time_utils import (
-    MOSCOW,
+    SignalTracker,
+    TrackedSignal,
 )
 
 
@@ -40,121 +22,163 @@ logger = logging.getLogger(
 )
 
 
-async def monitor_signals(
-    bot: Bot,
-    market: MarketClient,
-):
+def parse_direction(
+    value: str,
+) -> Direction | None:
 
-    logger.info(
-        "Signal monitor started."
-    )
+    try:
+        return Direction(value)
+    except ValueError:
+        return None
 
-    while True:
+
+class SignalMonitor:
+
+    def __init__(
+        self,
+        market: MarketClient,
+    ):
+
+        self.tracker = SignalTracker(
+            market
+        )
+
+    async def resolve_signal(
+        self,
+        signal_id: int,
+    ) -> bool:
+
+        signal = await get_signal(
+            signal_id
+        )
+
+        if signal is None:
+            return False
+
+        direction = parse_direction(
+            signal.direction
+        )
+
+        if direction is None:
+            return False
+
+        if signal.entry_price is None:
+            return False
+
+        tracked = TrackedSignal(
+            signal_id=signal.id,
+            symbol=signal.symbol,
+            direction=direction,
+            entry_price=signal.entry_price,
+            expiry_time=(
+                signal.created_at
+            ),
+        )
 
         try:
 
-            now = datetime.now(
-                MOSCOW
-            )
-
-            # ============================================
-            # ПРЕДУПРЕЖДЕНИЯ
-            # ============================================
-
-            warnings = (
-                await signal_tracker.get_due_warnings(
-                    now
+            exit_price = (
+                await self.tracker
+                .get_current_price(
+                    signal.symbol
                 )
             )
-
-            for signal in warnings:
-
-                try:
-
-                    await send_warning(
-                        bot=bot,
-                        signal=signal,
-                    )
-
-                    await signal_tracker.mark_warning_sent(
-                        signal.signal_id
-                    )
-
-                    logger.info(
-                        "Warning sent for signal #%s",
-                        signal.signal_id,
-                    )
-
-                except Exception:
-
-                    logger.exception(
-                        "Warning failed for #%s",
-                        signal.signal_id,
-                    )
-
-            # ============================================
-            # ПРОВЕРКА ЗАКРЫТЫХ СИГНАЛОВ
-            # ============================================
-
-            due_signals = (
-                await signal_tracker.get_due_closures(
-                    now
-                )
-            )
-
-            for signal in due_signals:
-
-                try:
-
-                    result = (
-                        await check_tracked_signal(
-                            market=market,
-                            signal=signal,
-                        )
-                    )
-
-                    await mark_signal_result(
-                        signal_id=result.signal_id,
-                        won=result.won,
-                        entry_price=result.entry_price,
-                        exit_price=result.exit_price,
-                    )
-
-                    await send_result(
-                        bot=bot,
-                        result=result,
-                    )
-
-                    await signal_tracker.remove(
-                        signal.signal_id
-                    )
-
-                except Exception:
-
-                    logger.exception(
-                        "Could not check "
-                        "signal #%s",
-                        signal.signal_id,
-                    )
-
-            await asyncio.sleep(
-                5
-            )
-
-        except asyncio.CancelledError:
-
-            logger.info(
-                "Signal monitor stopped."
-            )
-
-            raise
 
         except Exception:
 
             logger.exception(
-                "Signal monitor error."
+                "Could not get exit price "
+                "for signal #%s.",
+                signal_id,
             )
 
+            return False
+
+        won = (
+            self.tracker.calculate_result(
+                direction=tracked.direction,
+                entry_price=tracked.entry_price,
+                exit_price=exit_price,
+            )
+        )
+
+        status = (
+            "WON"
+            if won
+            else "LOST"
+        )
+
+        await update_signal_result(
+            signal_id=signal.id,
+            status=status,
+            exit_price=exit_price,
+            reason=(
+                "Price moved in "
+                "signal direction."
+                if won
+                else
+                "Price moved against "
+                "signal direction."
+            ),
+        )
+
+        return True
+
+    async def scan_once(self) -> int:
+
+        signals = (
+            await get_pending_signals()
+        )
+
+        resolved = 0
+
+        for signal in signals:
+
+            try:
+
+                if signal.entry_price is None:
+                    continue
+
+                if await self.resolve_signal(
+                    signal.id
+                ):
+
+                    resolved += 1
+
+            except Exception:
+
+                logger.exception(
+                    "Failed resolving "
+                    "signal #%s.",
+                    signal.id,
+                )
+
+        return resolved
+
+    async def run(
+        self,
+        interval: int = 30,
+    ) -> None:
+
+        logger.info(
+            "Signal monitor started."
+        )
+
+        while True:
+
+            try:
+
+                await self.scan_once()
+
+            except asyncio.CancelledError:
+                raise
+
+            except Exception:
+
+                logger.exception(
+                    "Signal monitor error."
+                )
+
             await asyncio.sleep(
-                10
+                interval
             )
