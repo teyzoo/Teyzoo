@@ -21,7 +21,13 @@ from handlers.signals import router as signals_router
 from handlers.applications import router as applications_router
 from handlers.admin import router as admin_router
 
-from market import market_client
+from market_factory import (
+    create_market_client,
+)
+
+market_client = (
+    create_market_client()
+)
 
 from scheduler import signal_scheduler
 
