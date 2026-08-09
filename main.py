@@ -1,12 +1,13 @@
 import asyncio
 import logging
 
+import uvicorn
+
 from fastapi import FastAPI
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-
-import uvicorn
 
 from config import (
     BOT_TOKEN,
@@ -21,13 +22,7 @@ from handlers.signals import router as signals_router
 from handlers.applications import router as applications_router
 from handlers.admin import router as admin_router
 
-from market_factory import (
-    create_market_client,
-)
-
-market_client = (
-    create_market_client()
-)
+from market_factory import create_market_client
 
 from scheduler import signal_scheduler
 
@@ -42,7 +37,9 @@ logging.basicConfig(
     ),
 )
 
-logger = logging.getLogger("teyzus")
+logger = logging.getLogger(
+    "teyzus"
+)
 
 
 app = FastAPI(
@@ -50,8 +47,12 @@ app = FastAPI(
 )
 
 
+market_client = create_market_client()
+
+
 @app.get("/")
 async def root():
+
     return {
         "status": "ok",
         "service": "TEYZUS Signal Bot",
@@ -60,6 +61,7 @@ async def root():
 
 @app.get("/health")
 async def health():
+
     return {
         "status": "healthy",
     }
@@ -69,7 +71,15 @@ async def run_bot():
 
     await init_db()
 
+    logger.info(
+        "Database initialized."
+    )
+
     await market_client.start()
+
+    logger.info(
+        "Market client started."
+    )
 
     bot = Bot(
         token=BOT_TOKEN,
@@ -97,7 +107,10 @@ async def run_bot():
     )
 
     scheduler_task = asyncio.create_task(
-        signal_scheduler(bot)
+        signal_scheduler(
+            bot=bot,
+            market=market_client,
+        )
     )
 
     try:
@@ -114,20 +127,49 @@ async def run_bot():
             "Telegram polling запущен."
         )
 
-        await dp.start_polling(bot)
+        await dp.start_polling(
+            bot
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Ошибка Telegram bot."
+        )
+
+        raise
 
     finally:
+
+        logger.info(
+            "Останавливаем scheduler..."
+        )
 
         scheduler_task.cancel()
 
         try:
+
             await scheduler_task
+
         except asyncio.CancelledError:
+
             pass
+
+        logger.info(
+            "Закрываем market client..."
+        )
 
         await market_client.close()
 
+        logger.info(
+            "Закрываем Telegram bot..."
+        )
+
         await bot.session.close()
+
+        logger.info(
+            "Bot shutdown completed."
+        )
 
 
 async def main():
@@ -149,17 +191,46 @@ async def main():
 
     try:
 
+        logger.info(
+            "FastAPI запускается "
+            "на %s:%s",
+            HOST,
+            PORT,
+        )
+
         await server.serve()
 
     finally:
 
-        bot_task.cancel()
+        if not bot_task.done():
+
+            bot_task.cancel()
 
         try:
+
             await bot_task
+
         except asyncio.CancelledError:
+
             pass
+
+        except Exception:
+
+            logger.exception(
+                "Ошибка при остановке bot task."
+            )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+
+    try:
+
+        asyncio.run(
+            main()
+        )
+
+    except KeyboardInterrupt:
+
+        logger.info(
+            "TEYZUS остановлен."
+        )
