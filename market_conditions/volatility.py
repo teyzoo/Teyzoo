@@ -1,48 +1,61 @@
 from __future__ import annotations
 
+from enum import Enum
+
 from market import Candle
+
+
+class VolatilityLevel(str, Enum):
+    LOW = "LOW"
+    NORMAL = "NORMAL"
+    HIGH = "HIGH"
 
 
 def calculate_volatility(
     candles: list[Candle],
-    period: int = 30,
-) -> float:
+) -> VolatilityLevel:
 
-    if len(candles) < 2:
-        return 0.0
+    if len(candles) < 20:
+        return VolatilityLevel.LOW
 
-    candles = candles[-period:]
+    recent = candles[-20:]
 
-    values: list[float] = []
-
-    for index in range(
-        1,
-        len(candles),
-    ):
-
-        previous = (
-            candles[index - 1].close
+    ranges = [
+        (
+            candle.high
+            - candle.low
         )
+        for candle in recent
+    ]
 
-        current = (
-            candles[index].close
-        )
+    closes = [
+        candle.close
+        for candle in recent
+    ]
 
-        if previous == 0:
-            continue
-
-        values.append(
-            abs(
-                current - previous
-            )
-            / previous
-            * 100
-        )
-
-    if not values:
-        return 0.0
-
-    return (
-        sum(values)
-        / len(values)
+    average_range = (
+        sum(ranges)
+        / len(ranges)
     )
+
+    average_price = (
+        sum(closes)
+        / len(closes)
+    )
+
+    if average_price <= 0:
+        return VolatilityLevel.LOW
+
+    percentage = (
+        average_range
+        / average_price
+        * 100
+    )
+
+    if percentage < 0.01:
+        return VolatilityLevel.LOW
+
+    if percentage > 0.30:
+        return VolatilityLevel.HIGH
+
+    return VolatilityLevel.NORMAL
