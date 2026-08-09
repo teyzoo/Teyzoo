@@ -2,108 +2,86 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from indicators import calculate_indicators
 from market import Candle
+
+from market_conditions.liquidity import (
+    calculate_liquidity,
+)
+
+from market_conditions.market_filter import (
+    MarketFilterResult,
+    evaluate_market_filter,
+)
+
+from market_conditions.session import (
+    MarketSession,
+    get_market_session,
+)
+
+from market_conditions.trend import (
+    TrendDirection,
+    calculate_trend,
+)
+
+from market_conditions.volatility import (
+    VolatilityLevel,
+    calculate_volatility,
+)
 
 
 @dataclass(slots=True)
 class MarketConditionResult:
-    allowed: bool
-    volatility_ok: bool
-    trend_ok: bool
-    reason: str
+    accepted: bool
+
+    trend: TrendDirection
+    volatility: VolatilityLevel
+    session: MarketSession
+
+    liquidity: float
+
+    reasons: list[str]
+    rejected_reasons: list[str]
 
 
 def evaluate_market_conditions(
     candles: list[Candle],
 ) -> MarketConditionResult:
 
-    if len(candles) < 50:
-        return MarketConditionResult(
-            allowed=False,
-            volatility_ok=False,
-            trend_ok=False,
-            reason=(
-                "Недостаточно свечей "
-                "для оценки рынка."
-            ),
-        )
-
-    indicators = calculate_indicators(
+    trend = calculate_trend(
         candles
     )
 
-    closes = [
-        candle.close
-        for candle in candles[-20:]
-    ]
-
-    if len(closes) < 20:
-        return MarketConditionResult(
-            allowed=False,
-            volatility_ok=False,
-            trend_ok=False,
-            reason="Недостаточно данных.",
-        )
-
-    highest = max(closes)
-    lowest = min(closes)
-
-    current = closes[-1]
-
-    if current <= 0:
-        return MarketConditionResult(
-            allowed=False,
-            volatility_ok=False,
-            trend_ok=False,
-            reason="Некорректная цена.",
-        )
-
-    volatility = (
-        highest - lowest
-    ) / current * 100
-
-    volatility_ok = (
-        0.01
-        <= volatility
-        <= 2.0
+    volatility = calculate_volatility(
+        candles
     )
 
-    trend_ok = (
-        indicators.ema_fast is not None
-        and indicators.ema_slow is not None
+    session = get_market_session(
+        candles[-1].timestamp
+        if candles
+        else None
     )
 
-    if not volatility_ok:
-        return MarketConditionResult(
-            allowed=False,
-            volatility_ok=False,
-            trend_ok=trend_ok,
-            reason=(
-                "Волатильность рынка "
-                "вне допустимого диапазона."
-            ),
-        )
+    liquidity = calculate_liquidity(
+        candles
+    )
 
-    if not trend_ok:
-        return MarketConditionResult(
-            allowed=False,
-            volatility_ok=True,
-            trend_ok=False,
-            reason=(
-                "Не удалось определить тренд."
-            ),
+    market_filter = (
+        evaluate_market_filter(
+            trend=trend,
+            volatility=volatility,
+            liquidity=liquidity,
+            session=session,
         )
+    )
 
     return MarketConditionResult(
-        allowed=True,
-        volatility_ok=True,
-        trend_ok=True,
-        reason="Рыночные условия подходят.",
+        accepted=market_filter.accepted,
+        trend=trend,
+        volatility=volatility,
+        session=session,
+        liquidity=liquidity,
+        reasons=market_filter.reasons,
+        rejected_reasons=(
+            market_filter.rejected_reasons
+        ),
     )
-
-
-__all__ = [
-    "MarketConditionResult",
-    "evaluate_market_conditions",
-]
