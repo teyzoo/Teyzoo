@@ -20,8 +20,12 @@ from pair_selector import (
     PairSelector,
 )
 
-from quality_filter import (
-    quality_filter,
+from market_conditions import (
+    evaluate_market_conditions,
+)
+
+from signal_policy import (
+    signal_policy,
 )
 
 from time_utils import (
@@ -30,19 +34,50 @@ from time_utils import (
     format_moscow_time,
 )
 
+from quality_filter import (
+    quality_filter,
+)
+
 
 logger = logging.getLogger(
     "scheduler"
 )
 
 
+# ============================================================
+# НАСТРОЙКИ
+# ============================================================
+
+# Минимальный score для отправки сигнала.
+# Слабые сигналы не отправляем.
+MIN_SIGNAL_SCORE = 85.0
+
+# Сколько причин максимум показываем пользователю.
+MAX_REASONS = 8
+
+
+# ============================================================
+# ОТПРАВКА ПОЛЬЗОВАТЕЛЯМ
+# ============================================================
+
 async def send_to_users(
     bot: Bot,
     text: str,
 ):
 
-    users = (
-        await get_active_users()
+    users = await get_active_users()
+
+    if not users:
+
+        logger.info(
+            "No active users."
+        )
+
+        return
+
+    logger.info(
+        "Sending message to %s users.",
+        len(users),
     )
 
     for telegram_id in users:
@@ -64,14 +99,58 @@ async def send_to_users(
             )
 
 
+# ============================================================
+# NO SIGNAL
+# ============================================================
+
+async def send_no_signal(
+    bot: Bot,
+    reason: str,
+):
+
+    text = (
+        "⛔ <b>NO SIGNAL</b>\n\n"
+        f"{reason}\n\n"
+        "❌ Сделка не выдаётся."
+    )
+
+    await send_to_users(
+        bot,
+        text,
+    )
+
+
+# ============================================================
+# АНАЛИЗ ОДНОГО ЦИКЛА
+# ============================================================
+
 async def run_signal_cycle(
     bot: Bot,
     market: MarketClient,
 ):
 
+    started_at = datetime.now(
+        MOSCOW
+    )
+
+    logger.info(
+        "===================================="
+    )
+
     logger.info(
         "Starting market analysis."
     )
+
+    logger.info(
+        "Analysis time: %s",
+        started_at.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+    )
+
+    # --------------------------------------------------------
+    # 1. Создаём selector
+    # --------------------------------------------------------
 
     try:
 
@@ -81,6 +160,28 @@ async def run_signal_cycle(
                 quality_filter
             ),
         )
+
+    except Exception:
+
+        logger.exception(
+            "Could not create PairSelector."
+        )
+
+        await send_no_signal(
+            bot,
+            (
+                "⚠️ Не удалось "
+                "запустить анализ рынка."
+            ),
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # 2. Ищем лучшую пару
+    # --------------------------------------------------------
+
+    try:
 
         best = (
             await selector.find_best_pair()
@@ -93,13 +194,27 @@ async def run_signal_cycle(
             exc,
         )
 
-        await send_to_users(
+        await send_no_signal(
             bot,
             (
-                "⛔ <b>NO SIGNAL</b>\n\n"
-                "Актуальные данные рынка "
-                "недоступны.\n\n"
-                "❌ Сделка не выдаётся."
+                "📡 Актуальные данные "
+                "рынка недоступны."
+            ),
+        )
+
+        return
+
+    except asyncio.TimeoutError:
+
+        logger.error(
+            "Market request timeout."
+        )
+
+        await send_no_signal(
+            bot,
+            (
+                "⏱ Получение рыночных "
+                "данных превысило таймаут."
             ),
         )
 
@@ -108,87 +223,340 @@ async def run_signal_cycle(
     except Exception:
 
         logger.exception(
-            "Signal cycle failed."
+            "Pair selection failed."
         )
 
-        await send_to_users(
+        await send_no_signal(
             bot,
             (
-                "⛔ <b>NO SIGNAL</b>\n\n"
-                "Анализ завершился ошибкой.\n\n"
-                "❌ Сделка не выдаётся."
+                "⚠️ Анализ рынка "
+                "завершился ошибкой."
             ),
         )
 
         return
+
+    # --------------------------------------------------------
+    # 3. Ни одна пара не прошла фильтр
+    # --------------------------------------------------------
 
     if best is None:
 
-        await send_to_users(
+        logger.info(
+            "No pair passed filters."
+        )
+
+        await send_no_signal(
             bot,
             (
-                "⛔ <b>NO SIGNAL</b>\n\n"
-                "Ни одна пара не прошла "
-                "строгий фильтр."
+                "Ни одна доступная пара "
+                "не прошла строгую "
+                "фильтрацию."
             ),
         )
 
         return
+
+    logger.info(
+        "Best pair: %s",
+        best.symbol,
+    )
+
+    # --------------------------------------------------------
+    # 4. Получаем результат
+    # --------------------------------------------------------
 
     result = best.result
 
+    logger.info(
+        "Direction: %s",
+        result.direction,
+    )
+
+    logger.info(
+        "Quality score: %.2f",
+        result.quality_score,
+    )
+
+    logger.info(
+        "Confirmations: %s/%s",
+        result.confirmations,
+        result.total_checks,
+    )
+
+    # --------------------------------------------------------
+    # 5. Проверяем направление
+    # --------------------------------------------------------
+
     if result.direction is None:
 
-        await send_to_users(
+        logger.info(
+            "No confirmed direction."
+        )
+
+        await send_no_signal(
             bot,
             (
-                "⛔ <b>NO SIGNAL</b>\n\n"
-                "Нет единого подтверждённого "
-                "направления."
+                "Нет единого "
+                "подтверждённого направления."
             ),
         )
 
         return
 
+    # --------------------------------------------------------
+    # 6. Проверяем score
+    # --------------------------------------------------------
+
+    if (
+        result.quality_score
+        < MIN_SIGNAL_SCORE
+    ):
+
+        logger.info(
+            "Signal rejected by score: %.2f",
+            result.quality_score,
+        )
+
+        await send_no_signal(
+            bot,
+            (
+                "Сигнал не прошёл "
+                "минимальный Quality Score.\n\n"
+                f"🎯 Текущий score: "
+                f"<b>"
+                f"{result.quality_score:.1f}%"
+                f"</b>\n"
+                f"🎯 Требуется: "
+                f"<b>"
+                f"{MIN_SIGNAL_SCORE:.1f}%"
+                f"</b>"
+            ),
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # 7. Проверяем Signal Policy
+    # --------------------------------------------------------
+
+    try:
+
+        policy = (
+            signal_policy.evaluate(
+                result.quality_score
+            )
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Signal policy failed."
+        )
+
+        await send_no_signal(
+            bot,
+            (
+                "Не удалось проверить "
+                "надёжность сигнала."
+            ),
+        )
+
+        return
+
+    if not policy.allowed:
+
+        logger.info(
+            "Signal rejected by policy: %s",
+            policy.reason,
+        )
+
+        await send_no_signal(
+            bot,
+            (
+                f"Сигнал отфильтрован.\n\n"
+                f"Причина: "
+                f"<b>"
+                f"{policy.reason}"
+                f"</b>"
+            ),
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # 8. Определяем время закрытия
+    # --------------------------------------------------------
+
     close_time = (
-        next_20_minute_mark()
+        next_20_minute_mark(
+            started_at
+        )
     )
+
+    logger.info(
+        "Signal close time: %s",
+        close_time.strftime(
+            "%H:%M:%S"
+        ),
+    )
+
+    # --------------------------------------------------------
+    # 9. Направление
+    # --------------------------------------------------------
 
     if result.direction.value == "UP":
 
-        direction = (
+        direction_text = (
             "📈 <b>ВВЕРХ</b>"
+        )
+
+    elif (
+        result.direction.value
+        == "DOWN"
+    ):
+
+        direction_text = (
+            "📉 <b>ВНИЗ</b>"
         )
 
     else:
 
-        direction = (
-            "📉 <b>ВНИЗ</b>"
+        logger.error(
+            "Unknown direction: %s",
+            result.direction,
         )
 
-    signal_id = (
-        await save_signal(
-            symbol=best.symbol,
-            direction=(
-                result.direction.value
-            ),
-            score=(
-                result.quality_score
-            ),
-            close_time=(
-                format_moscow_time(
-                    close_time
-                )
-            ),
+        await send_no_signal(
+            bot,
+            "Неизвестное направление сигнала.",
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # 10. Историческая вероятность
+    # --------------------------------------------------------
+
+    historical_probability = (
+        getattr(
+            policy,
+            "historical_probability",
+            None,
         )
     )
 
-    reasons = "\n".join(
-        f"• {reason}"
-        for reason in (
-            result.reasons[:8]
+    if (
+        historical_probability
+        is not None
+    ):
+
+        probability_text = (
+            f"{historical_probability:.1f}%"
         )
+
+    else:
+
+        probability_text = (
+            "недостаточно данных"
+        )
+
+    # --------------------------------------------------------
+    # 11. Сохраняем сигнал
+    # --------------------------------------------------------
+
+    try:
+
+        signal_id = (
+            await save_signal(
+                symbol=best.symbol,
+                direction=(
+                    result.direction.value
+                ),
+                score=(
+                    result.quality_score
+                ),
+                close_time=(
+                    format_moscow_time(
+                        close_time
+                    )
+                ),
+                historical_probability=(
+                    historical_probability
+                ),
+            )
+        )
+
+    except TypeError:
+
+        # Совместимость со старой
+        # версией database.py,
+        # если historical_probability
+        # ещё не добавлен.
+
+        logger.warning(
+            "save_signal() does not "
+            "support historical_probability."
+        )
+
+        signal_id = (
+            await save_signal(
+                symbol=best.symbol,
+                direction=(
+                    result.direction.value
+                ),
+                score=(
+                    result.quality_score
+                ),
+                close_time=(
+                    format_moscow_time(
+                        close_time
+                    )
+                ),
+            )
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Could not save signal."
+        )
+
+        await send_no_signal(
+            bot,
+            (
+                "Не удалось сохранить "
+                "сигнал в базе данных."
+            ),
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # 12. Формируем причины
+    # --------------------------------------------------------
+
+    reasons_list = (
+        result.reasons[:MAX_REASONS]
     )
+
+    if reasons_list:
+
+        reasons = "\n".join(
+            f"• {reason}"
+            for reason in reasons_list
+        )
+
+    else:
+
+        reasons = (
+            "• Подтверждения "
+            "не указаны."
+        )
+
+    # --------------------------------------------------------
+    # 13. Формируем сообщение
+    # --------------------------------------------------------
 
     text = (
         "🚨 <b>TEYZUS SIGNAL</b>\n\n"
@@ -196,16 +564,21 @@ async def run_signal_cycle(
         f"💱 Пара: "
         f"<b>{best.symbol}</b>\n\n"
 
-        f"{direction}\n\n"
+        f"{direction_text}\n\n"
 
         "⏰ <b>ЗАКРЫТЬ СДЕЛКУ:</b>\n"
         f"<b>"
         f"{format_moscow_time(close_time)}"
         f"</b>\n\n"
 
-        f"🎯 Quality score: "
+        f"🎯 Quality Score: "
         f"<b>"
         f"{result.quality_score:.1f}%"
+        f"</b>\n\n"
+
+        f"📊 Историческая вероятность: "
+        f"<b>"
+        f"{probability_text}"
         f"</b>\n\n"
 
         f"✅ Подтверждений: "
@@ -214,25 +587,48 @@ async def run_signal_cycle(
         f"{result.total_checks}"
         f"</b>\n\n"
 
-        "📊 Причины:\n"
+        "🔎 <b>Подтверждения:</b>\n"
         f"{reasons}\n\n"
 
         f"🆔 Signal #{signal_id}\n\n"
 
-        "⚠️ Quality score не является "
-        "гарантией выигрыша."
+        "⚠️ Сигнал является "
+        "аналитическим прогнозом. "
+        "Quality Score не означает "
+        "гарантированный выигрыш."
     )
+
+    # --------------------------------------------------------
+    # 14. Отправляем
+    # --------------------------------------------------------
 
     await send_to_users(
         bot,
         text,
     )
 
+    logger.info(
+        "Signal #%s sent.",
+        signal_id,
+    )
+
+    logger.info(
+        "===================================="
+    )
+
+
+# ============================================================
+# ПЛАНИРОВЩИК
+# ============================================================
 
 async def signal_scheduler(
     bot: Bot,
     market: MarketClient,
 ):
+
+    logger.info(
+        "Signal scheduler started."
+    )
 
     while True:
 
@@ -257,7 +653,14 @@ async def signal_scheduler(
                 seconds = 1
 
             logger.info(
-                "Next cycle: %s",
+                "Current Moscow time: %s",
+                now.strftime(
+                    "%H:%M:%S"
+                ),
+            )
+
+            logger.info(
+                "Next signal analysis: %s",
                 target.strftime(
                     "%H:%M:%S"
                 ),
@@ -267,12 +670,20 @@ async def signal_scheduler(
                 seconds
             )
 
+            logger.info(
+                "20-minute interval reached."
+            )
+
             await run_signal_cycle(
-                bot,
-                market,
+                bot=bot,
+                market=market,
             )
 
         except asyncio.CancelledError:
+
+            logger.info(
+                "Signal scheduler stopped."
+            )
 
             raise
 
