@@ -10,12 +10,10 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from database import (
-    upsert_user,
-)
+from database import get_or_create_user
 
 
-router = Router()
+router = Router(name="start")
 
 logger = logging.getLogger(
     "handlers.start"
@@ -30,7 +28,7 @@ def main_keyboard() -> ReplyKeyboardMarkup:
                     text="📊 Сигнал"
                 ),
                 KeyboardButton(
-                    text="📈 Последний сигнал"
+                    text="📈 Статистика"
                 ),
             ],
             [
@@ -53,7 +51,7 @@ async def start_handler(
     if message.from_user is None:
         return
 
-    await upsert_user(
+    user = await get_or_create_user(
         telegram_id=message.from_user.id,
         username=message.from_user.username,
         first_name=message.from_user.first_name,
@@ -62,19 +60,19 @@ async def start_handler(
 
     logger.info(
         "User registered: %s",
-        message.from_user.id,
+        user.telegram_id,
     )
 
     await message.answer(
         (
             "👋 <b>Добро пожаловать в TEYZUS</b>\n\n"
             "🤖 Бот анализирует рынок и "
-            "выдаёт сигналы, прошедшие "
-            "заданные фильтры.\n\n"
+            "выдаёт только сигналы, прошедшие "
+            "систему фильтрации.\n\n"
             "⏱ Новый цикл анализа — каждые 20 минут.\n"
             "⚠️ Предупреждение — за 2 минуты "
-            "до расчётного сигнала.\n\n"
-            "Важно: сигнал является аналитическим "
+            "до расчётного времени.\n\n"
+            "⚠️ Сигнал является аналитическим "
             "прогнозом и не гарантирует результат сделки."
         ),
         reply_markup=main_keyboard(),
@@ -82,9 +80,7 @@ async def start_handler(
 
 
 @router.message(
-    lambda message: (
-        message.text == "ℹ️ Помощь"
-    )
+    lambda message: message.text == "ℹ️ Помощь"
 )
 async def help_handler(
     message: Message,
@@ -92,18 +88,14 @@ async def help_handler(
     await message.answer(
         (
             "ℹ️ <b>Как работает TEYZUS</b>\n\n"
-            "1. Бот анализирует доступные пары.\n"
-            "2. Проверяет несколько таймфреймов.\n"
-            "3. Отбрасывает конфликтующие сигналы.\n"
-            "4. Проверяет Quality Score.\n"
-            "5. Проверяет историческую статистику.\n"
-            "6. После всех проверок формируется сигнал.\n\n"
-            "⚠️ За 2 минуты до сигнала приходит "
-            "предупреждение.\n\n"
-            "⏰ Затем сигнал закрывается в указанное "
-            "время и автоматически получает результат "
-            "WIN или LOSS.\n\n"
-            "Важно: аналитический сигнал не гарантирует "
-            "прибыль и не является финансовой рекомендацией."
+            "1. Бот получает рыночные данные.\n"
+            "2. Анализирует несколько таймфреймов.\n"
+            "3. Сравнивает направления.\n"
+            "4. Рассчитывает Quality Score.\n"
+            "5. Проверяет policy.\n"
+            "6. Сохраняет подтверждённый сигнал.\n"
+            "7. Отправляет его пользователям.\n"
+            "8. После окончания срока проверяет результат.\n\n"
+            "⏰ В сигнале указывается время его закрытия."
         )
     )
