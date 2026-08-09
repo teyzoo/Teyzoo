@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,9 +10,13 @@ from probability import (
 
 @dataclass(slots=True)
 class SignalPolicyResult:
+
     allowed: bool
+
     reason: str
+
     quality_score: float
+
     historical_probability: float | None
 
 
@@ -45,6 +48,7 @@ class SignalPolicy:
             quality_score
             < self.minimum_quality
         ):
+
             return SignalPolicyResult(
                 allowed=False,
                 reason=(
@@ -62,12 +66,12 @@ class SignalPolicy:
         )
 
         if probability is None:
+
             return SignalPolicyResult(
                 allowed=False,
                 reason=(
                     "Недостаточно исторических "
-                    "данных для расчёта "
-                    "реальной вероятности."
+                    "данных."
                 ),
                 quality_score=quality_score,
                 historical_probability=None,
@@ -77,6 +81,7 @@ class SignalPolicy:
             probability
             < self.minimum_probability
         ):
+
             return SignalPolicyResult(
                 allowed=False,
                 reason=(
