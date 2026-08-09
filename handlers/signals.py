@@ -1,112 +1,55 @@
-from aiogram import Router, F
+from __future__ import annotations
+
+from aiogram import Router
+from aiogram.filters import Command
 from aiogram.types import Message
 
 from database import (
     get_signal_statistics,
 )
 
-from market import (
-    market_client,
-    MarketDataError,
-)
-
-from predictor import predictor
-
-from filters import passes_filter
-
-
 router = Router()
 
 
-@router.message(
-    F.text == "📊 Получить сигнал"
-)
-async def get_signal(
+@router.message(Command("stats"))
+async def statistics_handler(
     message: Message,
 ):
 
-    await message.answer(
-        "🔎 <b>АНАЛИЗ РЫНКА</b>\n\n"
-        "Проверяю доступные данные...\n"
-        "⏳ Пожалуйста, подождите.",
-        parse_mode="HTML",
-    )
+    stats = await get_signal_statistics()
 
-    try:
+    total = stats["total"]
+    wins = stats["wins"]
+    losses = stats["losses"]
+    draws = stats["draws"]
+    pending = stats["pending"]
+    win_rate = stats["win_rate"]
 
-        candles = (
-            await market_client.get_candles(
-                "EUR/USD",
-                timeframe="1m",
-                limit=200,
-            )
-        )
+    text = (
+        "📊 <b>СТАТИСТИКА TEYZUS</b>\n\n"
 
-    except MarketDataError:
+        f"📌 Всего завершённых: "
+        f"<b>{total}</b>\n\n"
 
-        await message.answer(
-            "⛔ <b>NO SIGNAL</b>\n\n"
-            "Актуальные рыночные данные "
-            "сейчас недоступны.\n\n"
-            "❌ Бот не создаёт сигнал "
-            "на основе выдуманных данных.",
-            parse_mode="HTML",
-        )
+        f"🟢 WIN: "
+        f"<b>{wins}</b>\n"
 
-        return
+        f"🔴 LOSS: "
+        f"<b>{losses}</b>\n"
 
-    prediction = predictor.predict(
-        candles
-    )
+        f"⚪ DRAW: "
+        f"<b>{draws}</b>\n\n"
 
-    if not passes_filter(
-        prediction
-    ):
+        f"⏳ Ожидают результата: "
+        f"<b>{pending}</b>\n\n"
 
-        await message.answer(
-            "⛔ <b>NO SIGNAL</b>\n\n"
-            "Подходящая сделка не прошла "
-            "строгую систему фильтрации.",
-            parse_mode="HTML",
-        )
+        f"🎯 Фактический WIN RATE: "
+        f"<b>{win_rate:.2f}%</b>\n\n"
 
-        return
-
-    await message.answer(
-        "🚨 <b>SIGNAL</b>\n\n"
-        "💱 Пара: EUR/USD\n"
-        f"🎯 Quality score: "
-        f"{prediction.score:.1f}%\n\n"
-        "⚠️ Историческая вероятность "
-        "будет показана только после "
-        "достаточного количества "
-        "результатов backtest.",
-        parse_mode="HTML",
-    )
-
-
-@router.message(
-    F.text == "📈 Статистика"
-)
-async def statistics(
-    message: Message,
-):
-
-    stats = (
-        await get_signal_statistics()
+        "⚠️ Статистика рассчитывается "
+        "только по завершённым сигналам."
     )
 
     await message.answer(
-        "📈 <b>СТАТИСТИКА СИГНАЛОВ</b>\n\n"
-        f"📊 Всего: "
-        f"<b>{stats['total']}</b>\n"
-        f"✅ Побед: "
-        f"<b>{stats['wins']}</b>\n"
-        f"❌ Поражений: "
-        f"<b>{stats['losses']}</b>\n"
-        f"🎯 Win Rate: "
-        f"<b>{stats['win_rate']:.2f}%</b>\n\n"
-        "Статистика строится только "
-        "по сохранённым результатам.",
-        parse_mode="HTML",
+        text
     )
