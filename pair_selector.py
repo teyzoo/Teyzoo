@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 
 from market import MarketClient
@@ -9,27 +8,16 @@ from quality_filter import (
     QualityResult,
     analyze_timeframe,
 )
-
-
-DEFAULT_PAIRS = [
-    "EUR/USD",
-    "GBP/USD",
-    "USD/JPY",
-    "USD/CHF",
-    "AUD/USD",
-    "USD/CAD",
-    "NZD/USD",
-    "EUR/GBP",
-    "EUR/JPY",
-    "GBP/JPY",
-]
+from config import (
+    DEFAULT_PAIRS,
+    MARKET_CANDLE_LIMIT,
+    TIMEFRAMES,
+)
 
 
 @dataclass(slots=True)
 class PairAnalysis:
-
     symbol: str
-
     result: QualityResult
 
 
@@ -40,12 +28,8 @@ class PairSelector:
         market: MarketClient,
         quality_filter: QualityFilter,
     ):
-
         self.market = market
-
-        self.quality_filter = (
-            quality_filter
-        )
+        self.quality_filter = quality_filter
 
     async def analyze_pair(
         self,
@@ -55,37 +39,25 @@ class PairSelector:
         timeframe_data = (
             await self.market.get_multi_timeframe(
                 symbol=symbol,
-                timeframes=(
-                    "1m",
-                    "5m",
-                    "15m",
-                ),
-                limit=200,
+                timeframes=TIMEFRAMES,
+                limit=MARKET_CANDLE_LIMIT,
             )
         )
 
         analyses = []
 
-        for (
-            timeframe,
-            candles,
-        ) in timeframe_data.items():
-
-            analysis = (
-                analyze_timeframe(
-                    timeframe,
-                    candles,
-                )
+        for timeframe, candles in (
+            timeframe_data.items()
+        ):
+            result = analyze_timeframe(
+                timeframe,
+                candles,
             )
 
-            analyses.append(
-                analysis
-            )
+            analyses.append(result)
 
-        quality = (
-            self.quality_filter.evaluate(
-                analyses
-            )
+        quality = self.quality_filter.evaluate(
+            analyses
         )
 
         return PairAnalysis(
@@ -98,38 +70,25 @@ class PairSelector:
         pairs: list[str] | None = None,
     ) -> PairAnalysis | None:
 
-        symbols = (
+        selected_pairs = (
             pairs
             if pairs is not None
             else DEFAULT_PAIRS
         )
 
-        candidates: list[
-            PairAnalysis
-        ] = []
+        candidates: list[PairAnalysis] = []
 
-        tasks = [
-            self.analyze_pair(
-                symbol
-            )
-            for symbol in symbols
-        ]
+        for symbol in selected_pairs:
 
-        results = await asyncio.gather(
-            *tasks,
-            return_exceptions=True,
-        )
-
-        for result in results:
-
-            if isinstance(
-                result,
-                PairAnalysis,
-            ):
-
-                candidates.append(
-                    result
+            try:
+                analysis = await self.analyze_pair(
+                    symbol
                 )
+
+            except Exception:
+                continue
+
+            candidates.append(analysis)
 
         accepted = [
             item
