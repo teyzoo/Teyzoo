@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 
 from aiogram import Bot
+
+from config import SIGNAL_WARNING_MINUTES
 
 from database import (
     get_pending_signals,
 )
+
 from signal_notifications import (
     send_signal_warning,
 )
+
 from time_utils import (
-    now_moscow,
+    MOSCOW,
     parse_moscow_time,
     signal_warning_time,
 )
@@ -35,14 +40,10 @@ async def warning_scheduler(
     sent: set[int] = set()
 
     while True:
-
         try:
+            now = datetime.now(MOSCOW)
 
-            now = now_moscow()
-
-            signals = (
-                await get_pending_signals()
-            )
+            signals = await get_pending_signals()
 
             for signal in signals:
 
@@ -50,18 +51,15 @@ async def warning_scheduler(
                     continue
 
                 try:
-
-                    close_time = (
-                        parse_moscow_time(
-                            signal.close_time,
-                            reference=signal.created_at,
-                        )
+                    close_time = parse_moscow_time(
+                        signal.close_time,
+                        now,
                     )
 
                     warning_time = (
                         signal_warning_time(
                             close_time,
-                            2,
+                            SIGNAL_WARNING_MINUTES,
                         )
                     )
 
@@ -70,21 +68,16 @@ async def warning_scheduler(
                         <= now
                         < close_time
                     ):
-
                         await send_signal_warning(
                             bot,
                             signal,
                         )
 
-                        sent.add(
-                            signal.id
-                        )
+                        sent.add(signal.id)
 
                 except Exception:
-
                     logger.exception(
-                        "Warning error "
-                        "for signal #%s.",
+                        "Warning error for signal #%s.",
                         signal.id,
                     )
 
@@ -95,11 +88,8 @@ async def warning_scheduler(
             raise
 
         except Exception:
-
             logger.exception(
                 "Warning scheduler error."
             )
 
-        await asyncio.sleep(
-            interval
-        )
+        await asyncio.sleep(interval)
