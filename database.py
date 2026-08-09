@@ -193,3 +193,74 @@ async def save_signal(
         await db.commit()
 
         return cursor.lastrowid
+
+async def update_signal_result(
+    signal_id: int,
+    status: str,
+):
+    async with aiosqlite.connect(DB_PATH) as db:
+
+        await db.execute(
+            """
+            UPDATE signals
+            SET status = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                signal_id,
+            ),
+        )
+
+        await db.commit()
+
+
+async def get_signal_statistics():
+    async with aiosqlite.connect(DB_PATH) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT
+                COUNT(*),
+                SUM(
+                    CASE
+                        WHEN status = 'win'
+                        THEN 1
+                        ELSE 0
+                    END
+                ),
+                SUM(
+                    CASE
+                        WHEN status = 'loss'
+                        THEN 1
+                        ELSE 0
+                    END
+                )
+            FROM signals
+            """
+        )
+
+        row = await cursor.fetchone()
+
+        total = row[0] or 0
+        wins = row[1] or 0
+        losses = row[2] or 0
+
+        if total:
+
+            win_rate = (
+                wins
+                / total
+                * 100
+            )
+
+        else:
+
+            win_rate = 0.0
+
+        return {
+            "total": total,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": win_rate,
+        }
