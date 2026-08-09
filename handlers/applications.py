@@ -2,23 +2,22 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import Router
-from aiogram.filters import Text
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import (
     State,
     StatesGroup,
 )
-from aiogram.types import (
-    Message,
-)
+from aiogram.types import Message
 
 from database import (
     create_application,
 )
 
 
-router = Router()
+router = Router(
+    name="applications"
+)
 
 logger = logging.getLogger(
     "handlers.applications"
@@ -28,20 +27,16 @@ logger = logging.getLogger(
 class ApplicationStates(
     StatesGroup
 ):
-
     waiting_text = State()
 
 
 @router.message(
-    Text(
-        text="📝 Оставить заявку"
-    )
+    F.text == "📝 Оставить заявку"
 )
 async def application_start(
     message: Message,
     state: FSMContext,
 ):
-
     await state.set_state(
         ApplicationStates.waiting_text
     )
@@ -64,9 +59,11 @@ async def application_receive(
     message: Message,
     state: FSMContext,
 ):
-
-    if message.text == "/cancel":
-
+    if (
+        message.text
+        and message.text.strip().lower()
+        == "/cancel"
+    ):
         await state.clear()
 
         await message.answer(
@@ -84,7 +81,6 @@ async def application_receive(
     ).strip()
 
     if not text:
-
         await message.answer(
             "❌ Заявка не может быть пустой."
         )
@@ -92,20 +88,38 @@ async def application_receive(
         return
 
     if len(text) > 4000:
-
         await message.answer(
-            "❌ Заявка слишком длинная. "
-            "Максимум — 4000 символов."
+            (
+                "❌ Заявка слишком длинная.\n\n"
+                "Максимум — 4000 символов."
+            )
         )
 
         return
 
-    application_id = (
-        await create_application(
-            telegram_id=message.from_user.id,
-            text=text,
+    try:
+        application_id = (
+            await create_application(
+                telegram_id=message.from_user.id,
+                text=text,
+            )
         )
-    )
+
+    except Exception:
+        logger.exception(
+            "Could not create application "
+            "for user %s.",
+            message.from_user.id,
+        )
+
+        await message.answer(
+            (
+                "⚠️ <b>Не удалось сохранить заявку.</b>\n\n"
+                "Попробуй ещё раз через несколько секунд."
+            )
+        )
+
+        return
 
     await state.clear()
 
