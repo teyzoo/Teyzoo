@@ -1,171 +1,123 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import os
+from typing import Any
 
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    Float,
-    Integer,
-    String,
-    Text,
-    select,
-)
-from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    mapped_column,
-)
+import asyncpg
 
-from config import DATABASE_URL
+logger = logging.getLogger("database")
+
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+_pool: asyncpg.Pool | None = None
 
 
-logger = logging.getLogger(
-    "database"
-)
+def _normalize_database_url(url: str) -> str:
+    if url.startswith("postgres://"):
+        return url.replace(
+            "postgres://",
+            "postgresql://",
+            1,
+        )
 
-
-class Base(DeclarativeBase):
-    pass
-
-
-class User(Base):
-
-    __tablename__ = "users"
-
-    id: Mapped[int] = mapped_column(
-        Integer,
-        primary_key=True,
-        autoincrement=True,
-    )
-
-    telegram_id: Mapped[int] = mapped_column(
-        Integer,
-        unique=True,
-        index=True,
-    )
-
-    username: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-    )
-
-    first_name: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-    )
-
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-
-
-class Application(Base):
-
-    __tablename__ = "applications"
-
-    id: Mapped[int] = mapped_column(
-        Integer,
-        primary_key=True,
-        autoincrement=True,
-    )
-
-    telegram_id: Mapped[int] = mapped_column(
-        Integer,
-        index=True,
-    )
-
-    text: Mapped[str] = mapped_column(
-        Text,
-    )
-
-    status: Mapped[str] = mapped_column(
-        String(50),
-        default="NEW",
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-
-
-class Signal(Base):
-
-    __tablename__ = "signals"
-
-    id: Mapped[int] = mapped_column(
-        Integer,
-        primary_key=True,
-        autoincrement=True,
-    )
-
-    symbol: Mapped[str] = mapped_column(
-        String(32),
-        index=True,
-    )
-
-    direction: Mapped[str] = mapped_column(
-        String(16),
-    )
-
-    score: Mapped[float] = mapped_column(
-        Float,
-    )
-
-    historical_probability: Mapped[
-        float | None
-    ] = mapped_column(
-        Float,
-        nullable=True,
-    )
-
-    close_time: Mapped[str] = mapped_column(
-        String(64),
-    )
-
-    status: Mapped[str] = mapped_column(
-        String(32),
-        default="PENDING",
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-    )
-
-
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,
-    pool_pre_ping=True,
-)
-
-SessionLocal = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-)
+    return url
 
 
 async def init_db() -> None:
+    global _pool
 
-    async with engine.begin() as connection:
+    if _pool is not None:
+        return
 
-        await connection.run_sync(
-            Base.metadata.create_all
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL не установлен."
+        )
+
+    database_url = _normalize_database_url(
+        DATABASE_URL
+    )
+
+    _pool = await asyncpg.create_pool(
+        dsn=database_url,
+        min_size=1,
+        max_size=5,
+        command_timeout=20,
+    )
+
+    async with _pool.acquire() as conn:
+
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                telegram_id BIGINT PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signals (
+                id BIGSERIAL PRIMARY KEY,
+
+                symbol TEXT NOT NULL,
+
+                direction TEXT NOT NULL,
+
+                score DOUBLE PRECISION NOT NULL,
+
+                historical_probability
+                    DOUBLE PRECISION,
+
+                signal_time TEXT NOT NULL,
+
+                close_time TEXT NOT NULL,
+
+                result TEXT NOT NULL DEFAULT 'PENDING',
+
+                entry_price
+                    DOUBLE PRECISION,
+
+                exit_price
+                    DOUBLE PRECISION,
+
+                created_at TIMESTAMPTZ
+                    NOT NULL DEFAULT NOW(),
+
+                checked_at TIMESTAMPTZ
+            )
+            """
+        )
+
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_signals_result
+            ON signals(result)
+            """
+        )
+
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_signals_symbol
+            ON signals(symbol)
+            """
+        )
+
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_signals_created_at
+            ON signals(created_at)
+            """
         )
 
     logger.info(
@@ -173,112 +125,101 @@ async def init_db() -> None:
     )
 
 
-async def get_session() -> AsyncSession:
-    return SessionLocal()
+async def close_db() -> None:
+    global _pool
+
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
+
+        logger.info(
+            "Database connection closed."
+        )
+
+
+def _get_pool() -> asyncpg.Pool:
+    if _pool is None:
+        raise RuntimeError(
+            "Database не инициализирована."
+        )
+
+    return _pool
 
 
 async def register_user(
     telegram_id: int,
     username: str | None = None,
     first_name: str | None = None,
-) -> User:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(User).where(
-                User.telegram_id
-                == telegram_id
-            )
-        )
-
-        user = result.scalar_one_or_none()
-
-        if user is None:
-
-            user = User(
-                telegram_id=telegram_id,
-                username=username,
-                first_name=first_name,
-                is_active=True,
-            )
-
-            session.add(user)
-
-        else:
-
-            user.username = username
-            user.first_name = first_name
-            user.is_active = True
-
-        await session.commit()
-
-        await session.refresh(
-            user
-        )
-
-        return user
-
-
-async def deactivate_user(
-    telegram_id: int,
 ) -> None:
 
-    async with SessionLocal() as session:
+    pool = _get_pool()
 
-        result = await session.execute(
-            select(User).where(
-                User.telegram_id
-                == telegram_id
+    async with pool.acquire() as conn:
+
+        await conn.execute(
+            """
+            INSERT INTO users (
+                telegram_id,
+                username,
+                first_name,
+                is_active,
+                last_seen_at
             )
+            VALUES ($1, $2, $3, TRUE, NOW())
+            ON CONFLICT (telegram_id)
+            DO UPDATE SET
+                username = EXCLUDED.username,
+                first_name = EXCLUDED.first_name,
+                is_active = TRUE,
+                last_seen_at = NOW()
+            """,
+            telegram_id,
+            username,
+            first_name,
         )
 
-        user = result.scalar_one_or_none()
 
-        if user:
+async def set_user_active(
+    telegram_id: int,
+    active: bool,
+) -> None:
 
-            user.is_active = False
+    pool = _get_pool()
 
-            await session.commit()
+    async with pool.acquire() as conn:
+
+        await conn.execute(
+            """
+            UPDATE users
+            SET
+                is_active = $2,
+                last_seen_at = NOW()
+            WHERE telegram_id = $1
+            """,
+            telegram_id,
+            active,
+        )
 
 
 async def get_active_users() -> list[int]:
 
-    async with SessionLocal() as session:
+    pool = _get_pool()
 
-        result = await session.execute(
-            select(User.telegram_id).where(
-                User.is_active.is_(True)
-            )
+    async with pool.acquire() as conn:
+
+        rows = await conn.fetch(
+            """
+            SELECT telegram_id
+            FROM users
+            WHERE is_active = TRUE
+            ORDER BY telegram_id
+            """
         )
 
-        return list(
-            result.scalars().all()
-        )
-
-
-async def save_application(
-    telegram_id: int,
-    text: str,
-) -> int:
-
-    async with SessionLocal() as session:
-
-        application = Application(
-            telegram_id=telegram_id,
-            text=text,
-            status="NEW",
-        )
-
-        session.add(application)
-
-        await session.commit()
-
-        await session.refresh(
-            application
-        )
-
-        return application.id
+    return [
+        int(row["telegram_id"])
+        for row in rows
+    ]
 
 
 async def save_signal(
@@ -287,46 +228,202 @@ async def save_signal(
     score: float,
     close_time: str,
     historical_probability: float | None = None,
+    signal_time: str | None = None,
 ) -> int:
 
-    async with SessionLocal() as session:
+    pool = _get_pool()
 
-        signal = Signal(
-            symbol=symbol,
-            direction=direction,
-            score=score,
-            close_time=close_time,
-            historical_probability=(
-                historical_probability
-            ),
-            status="PENDING",
+    if signal_time is None:
+        from time_utils import format_moscow_time
+        from time_utils import now_moscow
+
+        signal_time = format_moscow_time(
+            now_moscow()
         )
 
-        session.add(signal)
+    async with pool.acquire() as conn:
 
-        await session.commit()
-
-        await session.refresh(
-            signal
-        )
-
-        return signal.id
-
-
-async def get_recent_signals(
-    limit: int = 20,
-) -> list[Signal]:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(Signal)
-            .order_by(
-                Signal.created_at.desc()
+        signal_id = await conn.fetchval(
+            """
+            INSERT INTO signals (
+                symbol,
+                direction,
+                score,
+                historical_probability,
+                signal_time,
+                close_time,
+                result
             )
-            .limit(limit)
+            VALUES (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                $6,
+                'PENDING'
+            )
+            RETURNING id
+            """,
+            symbol,
+            direction,
+            float(score),
+            historical_probability,
+            signal_time,
+            close_time,
         )
 
-        return list(
-            result.scalars().all()
+    return int(signal_id)
+
+
+async def get_pending_signals() -> list[dict[str, Any]]:
+
+    pool = _get_pool()
+
+    async with pool.acquire() as conn:
+
+        rows = await conn.fetch(
+            """
+            SELECT
+                id,
+                symbol,
+                direction,
+                score,
+                historical_probability,
+                signal_time,
+                close_time,
+                result,
+                entry_price,
+                exit_price,
+                created_at
+            FROM signals
+            WHERE result = 'PENDING'
+            ORDER BY id ASC
+            """
         )
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
+async def get_signal(
+    signal_id: int,
+) -> dict[str, Any] | None:
+
+    pool = _get_pool()
+
+    async with pool.acquire() as conn:
+
+        row = await conn.fetchrow(
+            """
+            SELECT
+                id,
+                symbol,
+                direction,
+                score,
+                historical_probability,
+                signal_time,
+                close_time,
+                result,
+                entry_price,
+                exit_price,
+                created_at
+            FROM signals
+            WHERE id = $1
+            """,
+            signal_id,
+        )
+
+    if row is None:
+        return None
+
+    return dict(row)
+
+
+async def update_signal_result(
+    signal_id: int,
+    result: str,
+    entry_price: float,
+    exit_price: float,
+) -> None:
+
+    pool = _get_pool()
+
+    async with pool.acquire() as conn:
+
+        await conn.execute(
+            """
+            UPDATE signals
+            SET
+                result = $2,
+                entry_price = $3,
+                exit_price = $4,
+                checked_at = NOW()
+            WHERE id = $1
+            """,
+            signal_id,
+            result,
+            float(entry_price),
+            float(exit_price),
+        )
+
+
+async def get_signal_statistics() -> dict[str, float | int]:
+
+    pool = _get_pool()
+
+    async with pool.acquire() as conn:
+
+        row = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE result IN ('WIN', 'LOSS', 'DRAW')
+                ) AS total,
+
+                COUNT(*) FILTER (
+                    WHERE result = 'WIN'
+                ) AS wins,
+
+                COUNT(*) FILTER (
+                    WHERE result = 'LOSS'
+                ) AS losses,
+
+                COUNT(*) FILTER (
+                    WHERE result = 'DRAW'
+                ) AS draws,
+
+                COUNT(*) FILTER (
+                    WHERE result = 'PENDING'
+                ) AS pending
+            FROM signals
+            """
+        )
+
+    total = int(row["total"] or 0)
+    wins = int(row["wins"] or 0)
+    losses = int(row["losses"] or 0)
+    draws = int(row["draws"] or 0)
+    pending = int(row["pending"] or 0)
+
+    decisive = wins + losses
+
+    if decisive:
+        win_rate = (
+            wins
+            / decisive
+            * 100
+        )
+    else:
+        win_rate = 0.0
+
+    return {
+        "total": total,
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "pending": pending,
+        "win_rate": win_rate,
+    }
