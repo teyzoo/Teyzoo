@@ -9,9 +9,11 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    func,
     select,
 )
 from sqlalchemy.ext.asyncio import (
+    AsyncAttrs,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -24,7 +26,7 @@ from sqlalchemy.orm import (
 from config import DATABASE_URL
 logger = logging.getLogger("database")
 # ============================================================
-# DATABASE ENGINE
+# DATABASE URL
 # ============================================================
 def normalize_database_url(
     url: str,
@@ -47,15 +49,23 @@ def normalize_database_url(
             1,
         )
     return url
-DATABASE_URL_NORMALIZED = (
+DATABASE_URL_ASYNC = (
     normalize_database_url(
         DATABASE_URL
     )
 )
+if not DATABASE_URL_ASYNC:
+    raise RuntimeError(
+        "DATABASE_URL не задан."
+    )
+# ============================================================
+# ENGINE
+# ============================================================
 engine = create_async_engine(
-    DATABASE_URL_NORMALIZED,
+    DATABASE_URL_ASYNC,
     echo=False,
     pool_pre_ping=True,
+    pool_recycle=1800,
 )
 SessionLocal = async_sessionmaker(
     bind=engine,
@@ -65,7 +75,10 @@ SessionLocal = async_sessionmaker(
 # ============================================================
 # BASE
 # ============================================================
-class Base(DeclarativeBase):
+class Base(
+    AsyncAttrs,
+    DeclarativeBase,
+):
     pass
 # ============================================================
 # USER
@@ -96,14 +109,15 @@ class User(Base):
         default=True,
         nullable=False,
     )
-    is_admin: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-        nullable=False,
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
         nullable=False,
     )
 # ============================================================
@@ -117,16 +131,20 @@ class Signal(Base):
         autoincrement=True,
     )
     symbol: Mapped[str] = mapped_column(
-        String(50),
+        String(32),
         nullable=False,
         index=True,
     )
     direction: Mapped[str] = mapped_column(
-        String(20),
+        String(16),
         nullable=False,
     )
     score: Mapped[float] = mapped_column(
         Float,
+        nullable=False,
+    )
+    close_time: Mapped[str] = mapped_column(
+        String(64),
         nullable=False,
     )
     historical_probability: Mapped[
@@ -134,10 +152,6 @@ class Signal(Base):
     ] = mapped_column(
         Float,
         nullable=True,
-    )
-    close_time: Mapped[str] = mapped_column(
-        String(100),
-        nullable=False,
     )
     entry_price: Mapped[
         float | None
@@ -154,15 +168,24 @@ class Signal(Base):
     result: Mapped[
         str | None
     ] = mapped_column(
-        String(20),
+        String(16),
         nullable=True,
         index=True,
     )
-    result_checked: Mapped[bool] = mapped_column(
+    warning_sent: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
         nullable=False,
-        index=True,
+    )
+    signal_sent: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    checked: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -170,7 +193,13 @@ class Signal(Base):
         nullable=False,
         index=True,
     )
-    checked_at: Mapped[
+    entry_time: Mapped[
+        datetime | None
+    ] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    result_time: Mapped[
         datetime | None
     ] = mapped_column(
         DateTime,
@@ -179,7 +208,7 @@ class Signal(Base):
 # ============================================================
 # INIT DATABASE
 # ============================================================
-async def init_db():
+async def init_db() -> None:
     logger.info(
         "Initializing database..."
     )
@@ -193,7 +222,7 @@ async def init_db():
 # ============================================================
 # USER FUNCTIONS
 # ============================================================
-async def get_or_create_user(
+async def register_user(
     telegram_id: int,
     username: str | None = None,
     first_name: str | None = None,
@@ -215,20 +244,32 @@ async def get_or_create_user(
             )
             session.add(user)
         else:
-            if username is not None:
-                user.username = username
-            if first_name is not None:
-                user.first_name = first_name
+            user.username = username
+            user.first_name = first_name
             user.is_active = True
+            user.updated_at = (
+                datetime.utcnow()
+            )
         await session.commit()
         await session.refresh(
             user
         )
         return user
+async def get_user(
+    telegram_id: int,
+) -> User | None:
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(User).where(
+                User.telegram_id
+                == telegram_id
+            )
+        )
+        return result.scalar_one_or_none()
 async def set_user_active(
     telegram_id: int,
     active: bool,
-):
+) -> None:
     async with SessionLocal() as session:
         result = await session.execute(
             select(User).where(
@@ -238,16 +279,16 @@ async def set_user_active(
         )
         user = result.scalar_one_or_none()
         if user is None:
-            return False
+            return
         user.is_active = active
+        user.updated_at = (
+            datetime.utcnow()
+        )
         await session.commit()
-        return True
 async def get_active_users() -> list[int]:
     async with SessionLocal() as session:
         result = await session.execute(
-            select(
-                User.telegram_id
-            ).where(
+            select(User.telegram_id).where(
                 User.is_active.is_(True)
             )
         )
@@ -255,7 +296,7 @@ async def get_active_users() -> list[int]:
             result.scalars().all()
         )
 # ============================================================
-# SIGNAL FUNCTIONS
+# SAVE SIGNAL
 # ============================================================
 async def save_signal(
     symbol: str,
@@ -263,20 +304,19 @@ async def save_signal(
     score: float,
     close_time: str,
     historical_probability: float | None = None,
-    entry_price: float | None = None,
 ) -> int:
     async with SessionLocal() as session:
         signal = Signal(
             symbol=symbol,
             direction=direction,
             score=float(score),
+            close_time=close_time,
             historical_probability=(
                 historical_probability
             ),
-            close_time=close_time,
-            entry_price=entry_price,
-            result=None,
-            result_checked=False,
+            warning_sent=False,
+            signal_sent=False,
+            checked=False,
         )
         session.add(signal)
         await session.commit()
@@ -288,33 +328,118 @@ async def save_signal(
             signal.id,
         )
         return signal.id
+# ============================================================
+# SIGNAL HELPERS
+# ============================================================
+def signal_to_dict(
+    signal: Signal,
+) -> dict[str, Any]:
+    return {
+        "id": signal.id,
+        "symbol": signal.symbol,
+        "direction": signal.direction,
+        "score": signal.score,
+        "close_time": signal.close_time,
+        "historical_probability": (
+            signal.historical_probability
+        ),
+        "entry_price": signal.entry_price,
+        "exit_price": signal.exit_price,
+        "result": signal.result,
+        "warning_sent": signal.warning_sent,
+        "signal_sent": signal.signal_sent,
+        "checked": signal.checked,
+        "created_at": signal.created_at,
+        "entry_time": signal.entry_time,
+        "result_time": signal.result_time,
+    }
+# ============================================================
+# PENDING SIGNALS
+# ============================================================
+async def get_pending_signals() -> list[dict[str, Any]]:
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Signal)
+            .where(
+                Signal.checked.is_(False)
+            )
+            .order_by(
+                Signal.id.asc()
+            )
+        )
+        signals = result.scalars().all()
+        return [
+            signal_to_dict(signal)
+            for signal in signals
+        ]
 async def get_signal(
     signal_id: int,
-) -> Signal | None:
+) -> dict[str, Any] | None:
     async with SessionLocal() as session:
         result = await session.execute(
             select(Signal).where(
                 Signal.id == signal_id
             )
         )
-        return result.scalar_one_or_none()
-async def get_pending_signals() -> list[Signal]:
+        signal = (
+            result.scalar_one_or_none()
+        )
+        if signal is None:
+            return None
+        return signal_to_dict(
+            signal
+        )
+# ============================================================
+# WARNING
+# ============================================================
+async def mark_warning_sent(
+    signal_id: int,
+) -> bool:
     async with SessionLocal() as session:
         result = await session.execute(
-            select(Signal)
-            .where(
-                Signal.result_checked.is_(False)
-            )
-            .order_by(
-                Signal.created_at.asc()
+            select(Signal).where(
+                Signal.id == signal_id
             )
         )
-        return list(
-            result.scalars().all()
+        signal = (
+            result.scalar_one_or_none()
         )
+        if signal is None:
+            return False
+        if signal.warning_sent:
+            return False
+        signal.warning_sent = True
+        await session.commit()
+        return True
+# ============================================================
+# SIGNAL SENT
+# ============================================================
+async def mark_signal_sent(
+    signal_id: int,
+) -> bool:
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Signal).where(
+                Signal.id == signal_id
+            )
+        )
+        signal = (
+            result.scalar_one_or_none()
+        )
+        if signal is None:
+            return False
+        if signal.signal_sent:
+            return False
+        signal.signal_sent = True
+        await session.commit()
+        return True
+# ============================================================
+# ENTRY PRICE
+# ============================================================
 async def set_signal_entry_price(
     signal_id: int,
     entry_price: float,
+    entry_time: datetime | None = None,
 ) -> bool:
     async with SessionLocal() as session:
         result = await session.execute(
@@ -330,13 +455,33 @@ async def set_signal_entry_price(
         signal.entry_price = float(
             entry_price
         )
+        signal.entry_time = (
+            entry_time
+            or datetime.utcnow()
+        )
         await session.commit()
         return True
+# ============================================================
+# RESULT
+# ============================================================
 async def set_signal_result(
     signal_id: int,
     result_value: str,
-    exit_price: float | None = None,
+    exit_price: float,
+    result_time: datetime | None = None,
 ) -> bool:
+    result_value = (
+        result_value.upper().strip()
+    )
+    if result_value not in {
+        "WIN",
+        "LOSS",
+        "DRAW",
+    }:
+        raise ValueError(
+            "result_value должен быть "
+            "WIN, LOSS или DRAW."
+        )
     async with SessionLocal() as session:
         result = await session.execute(
             select(Signal).where(
@@ -348,66 +493,143 @@ async def set_signal_result(
         )
         if signal is None:
             return False
-        signal.result = (
-            result_value.upper()
+        signal.result = result_value
+        signal.exit_price = float(
+            exit_price
         )
-        if exit_price is not None:
-            signal.exit_price = float(
-                exit_price
-            )
-        signal.result_checked = True
-        signal.checked_at = (
-            datetime.utcnow()
+        signal.result_time = (
+            result_time
+            or datetime.utcnow()
         )
+        signal.checked = True
         await session.commit()
         logger.info(
             "Signal #%s result: %s",
             signal_id,
-            signal.result,
+            result_value,
         )
         return True
+# ============================================================
+# SIGNALS FOR RESULT CHECKER
+# ============================================================
+async def get_signals_for_result_check() -> list[dict[str, Any]]:
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Signal)
+            .where(
+                Signal.checked.is_(False),
+                Signal.signal_sent.is_(True),
+            )
+            .order_by(
+                Signal.id.asc()
+            )
+        )
+        signals = result.scalars().all()
+        return [
+            signal_to_dict(signal)
+            for signal in signals
+        ]
+# ============================================================
+# SIGNALS FOR WARNING
+# ============================================================
+async def get_signals_for_warning() -> list[dict[str, Any]]:
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Signal)
+            .where(
+                Signal.warning_sent.is_(False),
+                Signal.checked.is_(False),
+            )
+            .order_by(
+                Signal.id.asc()
+            )
+        )
+        signals = result.scalars().all()
+        return [
+            signal_to_dict(signal)
+            for signal in signals
+        ]
 # ============================================================
 # STATISTICS
 # ============================================================
 async def get_signal_statistics() -> dict[str, Any]:
     async with SessionLocal() as session:
-        result = await session.execute(
-            select(Signal)
-            .where(
-                Signal.result_checked.is_(True)
+        total_result = await session.execute(
+            select(
+                func.count(Signal.id)
             )
         )
-        signals = list(
-            result.scalars().all()
+        total = (
+            total_result.scalar()
+            or 0
         )
-    total = len(signals)
-    wins = sum(
-        1
-        for signal in signals
-        if signal.result == "WIN"
-    )
-    losses = sum(
-        1
-        for signal in signals
-        if signal.result == "LOSS"
-    )
-    if total:
-        win_rate = (
-            wins / total * 100
+        wins_result = await session.execute(
+            select(
+                func.count(Signal.id)
+            ).where(
+                Signal.result == "WIN"
+            )
         )
-    else:
-        win_rate = 0.0
-    return {
-        "total": total,
-        "wins": wins,
-        "losses": losses,
-        "win_rate": win_rate,
-    }
+        wins = (
+            wins_result.scalar()
+            or 0
+        )
+        losses_result = await session.execute(
+            select(
+                func.count(Signal.id)
+            ).where(
+                Signal.result == "LOSS"
+            )
+        )
+        losses = (
+            losses_result.scalar()
+            or 0
+        )
+        draws_result = await session.execute(
+            select(
+                func.count(Signal.id)
+            ).where(
+                Signal.result == "DRAW"
+            )
+        )
+        draws = (
+            draws_result.scalar()
+            or 0
+        )
+        completed = (
+            wins
+            + losses
+            + draws
+        )
+        if completed:
+            win_rate = (
+                wins
+                / completed
+                * 100
+            )
+        else:
+            win_rate = 0.0
+        return {
+            "total": total,
+            "wins": wins,
+            "losses": losses,
+            "draws": draws,
+            "completed": completed,
+            "win_rate": win_rate,
+        }
 # ============================================================
-# SHUTDOWN
+# CLOSE DATABASE
 # ============================================================
-async def close_db():
+async def close_db() -> None:
     await engine.dispose()
     logger.info(
         "Database connection closed."
     )
+
+Это полная замена database.py.
+
+После этого у нас база уже имеет весь необходимый фундамент для цепочки:
+
+scheduler → предупреждение → сигнал → signal_result_checker → цена входа → цена выхода → WIN/LOSS → статистика.
+
+Следующим файлом я бы поставил полный signal_result_checker.py, чтобы сразу состыковать его именно с этим database.py, а затем уже сделать финальный main.py.
