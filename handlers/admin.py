@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -10,7 +12,13 @@ from database import (
 )
 
 
-router = Router()
+router = Router(
+    name="admin"
+)
+
+logger = logging.getLogger(
+    "handlers.admin"
+)
 
 
 def is_owner(
@@ -23,7 +31,9 @@ def is_owner(
     )
 
 
-@router.message(Command("admin"))
+@router.message(
+    Command("admin")
+)
 async def admin_handler(
     message: Message,
 ):
@@ -31,37 +41,85 @@ async def admin_handler(
     if not is_owner(message):
 
         await message.answer(
-            "⛔ Доступ запрещён."
+            "⛔ <b>Доступ запрещён.</b>"
         )
 
         return
 
-    stats = (
-        await get_signal_statistics()
-    )
+    try:
 
-    text = (
-        "👑 <b>TEYZUS ADMIN</b>\n\n"
+        stats = (
+            await get_signal_statistics()
+        )
 
-        f"📊 Завершено: "
-        f"<b>{stats['total']}</b>\n"
+        total = int(
+            stats.get(
+                "total",
+                0,
+            )
+        )
 
-        f"🟢 WIN: "
-        f"<b>{stats['wins']}</b>\n"
+        wins = int(
+            stats.get(
+                "wins",
+                0,
+            )
+        )
 
-        f"🔴 LOSS: "
-        f"<b>{stats['losses']}</b>\n"
+        losses = int(
+            stats.get(
+                "losses",
+                0,
+            )
+        )
 
-        f"⚪ DRAW: "
-        f"<b>{stats['draws']}</b>\n"
+        pending = int(
+            stats.get(
+                "pending",
+                0,
+            )
+        )
 
-        f"⏳ Pending: "
-        f"<b>{stats['pending']}</b>\n\n"
+        winrate = float(
+            stats.get(
+                "winrate",
+                0.0,
+            )
+        )
 
-        f"🎯 WIN RATE: "
-        f"<b>{stats['win_rate']:.2f}%</b>"
-    )
+        completed = (
+            wins + losses
+        )
 
-    await message.answer(
-        text
-    )
+        text = (
+            "👑 <b>TEYZUS ADMIN</b>\n\n"
+            f"📊 Всего сигналов: "
+            f"<b>{total}</b>\n\n"
+            f"📁 Завершено: "
+            f"<b>{completed}</b>\n"
+            f"🟢 WIN: "
+            f"<b>{wins}</b>\n"
+            f"🔴 LOSS: "
+            f"<b>{losses}</b>\n"
+            f"⏳ Pending: "
+            f"<b>{pending}</b>\n\n"
+            f"🎯 WIN RATE: "
+            f"<b>{winrate:.2f}%</b>"
+        )
+
+        await message.answer(
+            text
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Could not load admin statistics."
+        )
+
+        await message.answer(
+            (
+                "⚠️ <b>Не удалось загрузить "
+                "статистику.</b>"
+            )
+        )
