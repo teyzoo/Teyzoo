@@ -1,45 +1,51 @@
 from __future__ import annotations
 
+from enum import Enum
+
 from market import Candle
 
 
-def calculate_trend_strength(
+class TrendDirection(str, Enum):
+    BULLISH = "BULLISH"
+    BEARISH = "BEARISH"
+    SIDEWAYS = "SIDEWAYS"
+
+
+def calculate_trend(
     candles: list[Candle],
-    period: int = 30,
-) -> float:
+) -> TrendDirection:
 
-    if len(candles) < 2:
-        return 0.0
+    if len(candles) < 20:
+        return TrendDirection.SIDEWAYS
 
-    candles = candles[-period:]
+    closes = [
+        candle.close
+        for candle in candles
+    ]
 
-    first = candles[0].close
-    last = candles[-1].close
+    short = (
+        sum(closes[-5:])
+        / 5
+    )
 
-    if first == 0:
-        return 0.0
+    long = (
+        sum(closes[-20:])
+        / 20
+    )
 
-    return (
-        abs(last - first)
-        / first
+    if long == 0:
+        return TrendDirection.SIDEWAYS
+
+    difference = (
+        (short - long)
+        / long
         * 100
     )
 
+    if difference >= 0.03:
+        return TrendDirection.BULLISH
 
-def trend_direction(
-    candles: list[Candle],
-) -> str | None:
+    if difference <= -0.03:
+        return TrendDirection.BEARISH
 
-    if len(candles) < 2:
-        return None
-
-    first = candles[0].close
-    last = candles[-1].close
-
-    if last > first:
-        return "UP"
-
-    if last < first:
-        return "DOWN"
-
-    return None
+    return TrendDirection.SIDEWAYS
