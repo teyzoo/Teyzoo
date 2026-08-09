@@ -5,6 +5,9 @@ from aiogram import Bot
 from database import (
     get_signal,
 )
+from signal_notifications import (
+    send_to_users,
+)
 
 
 async def notify_signal_result(
@@ -24,7 +27,11 @@ async def notify_signal_result(
         text = (
             "🟢 <b>СИГНАЛ ЗАКРЫТ — WIN</b>\n\n"
             f"💱 {signal.symbol}\n"
-            f"📈 {signal.direction}\n"
+            f"📈 {signal.direction}\n\n"
+            f"💰 Вход: "
+            f"{signal.entry_price}\n"
+            f"💰 Выход: "
+            f"{signal.exit_price}\n\n"
             f"🎯 Score: "
             f"{signal.score:.1f}%"
         )
@@ -34,17 +41,17 @@ async def notify_signal_result(
         text = (
             "🔴 <b>СИГНАЛ ЗАКРЫТ — LOSS</b>\n\n"
             f"💱 {signal.symbol}\n"
-            f"📉 {signal.direction}\n"
+            f"📉 {signal.direction}\n\n"
+            f"💰 Вход: "
+            f"{signal.entry_price}\n"
+            f"💰 Выход: "
+            f"{signal.exit_price}\n\n"
             f"🎯 Score: "
             f"{signal.score:.1f}%"
         )
 
     else:
         return
-
-    from signal_notifications import (
-        send_to_users,
-    )
 
     await send_to_users(
         bot,
