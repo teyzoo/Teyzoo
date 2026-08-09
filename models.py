@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum
 
 
@@ -9,22 +8,13 @@ class Direction(str, Enum):
     DOWN = "DOWN"
 
 
-class SignalResult(str, Enum):
+class SignalStatus(str, Enum):
     PENDING = "PENDING"
     WIN = "WIN"
     LOSS = "LOSS"
-    DRAW = "DRAW"
+    VOID = "VOID"
 
 
-@dataclass(slots=True)
-class SignalRecord:
-    id: int
-    symbol: str
-    direction: Direction
-    score: float
-    historical_probability: float | None
-    signal_time: str
-    close_time: str
-    result: SignalResult
-    entry_price: float | None
-    exit_price: float | None
+class UserStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    BLOCKED = "BLOCKED"
