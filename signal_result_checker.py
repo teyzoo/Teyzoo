@@ -22,12 +22,13 @@ class SignalResultChecker:
         self,
         market: MarketClient,
     ):
-
         self.monitor = SignalMonitor(
             market
         )
 
-    async def check_once(self) -> int:
+    async def check_once(
+        self,
+    ) -> int:
 
         resolved = (
             await self.monitor.scan_once()
