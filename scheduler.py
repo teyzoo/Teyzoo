@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 
 from aiogram import Bot
 
@@ -24,6 +25,7 @@ from quality_filter import (
 )
 
 from time_utils import (
+    MOSCOW,
     next_20_minute_mark,
     format_moscow_time,
 )
@@ -128,7 +130,7 @@ async def run_signal_cycle(
                 "⛔ <b>NO SIGNAL</b>\n\n"
                 "Ни одна валютная пара "
                 "не прошла строгий фильтр.\n\n"
-                f"⏰ Следующее время закрытия: "
+                f"⏰ Ближайшее время закрытия: "
                 f"<b>{format_moscow_time(close_time)}</b>\n\n"
                 "❌ Слабые сделки "
                 "автоматически отфильтрованы."
@@ -191,22 +193,21 @@ async def run_signal_cycle(
         "⏰ <b>ЗАКРЫТЬ СДЕЛКУ:</b>\n"
         f"<b>{format_moscow_time(close_time)}</b>\n\n"
 
-        f"🔥 Качество сигнала: "
+        f"🔥 Качество: "
         f"<b>{result.quality_score:.1f}%</b>\n\n"
 
         f"✅ Подтверждения: "
         f"<b>{result.confirmations}/"
         f"{result.total_checks}</b>\n\n"
 
-        "📊 Подтверждения:\n"
+        "📊 Анализ:\n"
         f"{reasons_text}\n\n"
 
         f"🆔 Signal #{signal_id}\n\n"
 
-        "⚠️ Процент выше — это "
-        "внутренний quality score, "
-        "а не гарантированная вероятность "
-        "выигрыша."
+        "⚠️ Качество — это "
+        "внутренняя оценка модели, "
+        "не гарантия результата."
     )
 
     await send_to_users(
@@ -223,26 +224,26 @@ async def signal_scheduler(
 
         try:
 
-            target = (
-                next_20_minute_mark()
+            now = datetime.now(
+                MOSCOW
             )
 
-            now = target.tzinfo
-
-            current = (
-                next_20_minute_mark()
+            target = (
+                next_20_minute_mark(now)
             )
 
             seconds = (
-                target - current
+                target - now
             ).total_seconds()
 
-            if seconds <= 0:
+            if seconds < 1:
                 seconds = 1
 
             logger.info(
-                "Next signal cycle: %s",
-                target,
+                "Следующий цикл анализа: %s",
+                target.strftime(
+                    "%Y-%m-%d %H:%M:%S %Z"
+                ),
             )
 
             await asyncio.sleep(
