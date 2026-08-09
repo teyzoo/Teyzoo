@@ -2,28 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
-from contextlib import suppress
+from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from fastapi import FastAPI
 
 from config import (
     BOT_TOKEN,
+    HOST,
+    PORT,
     validate_config,
 )
 
 from database import (
     close_database,
     init_database,
-)
-
-from handlers import (
-    admin,
-    applications,
-    signals,
-    start,
 )
 
 from market_factory import (
@@ -34,10 +29,13 @@ from scheduler import (
     Scheduler,
 )
 
+from handlers.start import router as start_router
+from handlers.signals import router as signals_router
+from handlers.applications import (
+    router as applications_router,
+)
+from handlers.admin import router as admin_router
 
-# =========================================================
-# LOGGING
-# =========================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,306 +45,49 @@ logging.basicConfig(
         "%(name)s | "
         "%(message)s"
     ),
-    stream=sys.stdout,
 )
 
-logger = logging.getLogger(
-    "main"
+logger = logging.getLogger("main")
+
+
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(
+        parse_mode=ParseMode.HTML,
+    ),
+)
+
+dp = Dispatcher()
+
+dp.include_router(start_router)
+dp.include_router(signals_router)
+dp.include_router(applications_router)
+dp.include_router(admin_router)
+
+
+market = create_market_client()
+
+scheduler = Scheduler(
+    bot=bot,
+    market=market,
 )
 
 
-# =========================================================
-# GLOBAL OBJECTS
-# =========================================================
-
-bot: Bot | None = None
-market = None
-scheduler: Scheduler | None = None
+bot_task: asyncio.Task | None = None
 
 
-# =========================================================
-# DISPATCHER
-# =========================================================
-
-def create_dispatcher() -> Dispatcher:
-
-    dp = Dispatcher()
-
-    # -----------------------------------------------------
-    # ROUTERS
-    # -----------------------------------------------------
-
-    dp.include_router(
-        start.router
-    )
-
-    dp.include_router(
-        signals.router
-    )
-
-    dp.include_router(
-        applications.router
-    )
-
-    dp.include_router(
-        admin.router
-    )
+async def bot_polling() -> None:
+    """
+    Отдельная задача Telegram polling.
+    """
 
     logger.info(
-        "Telegram routers registered."
+        "Telegram polling starting..."
     )
-
-    return dp
-
-
-# =========================================================
-# STARTUP
-# =========================================================
-
-async def startup(
-    telegram_bot: Bot,
-    market_client,
-) -> Scheduler:
-
-    global scheduler
-
-    logger.info(
-        "Starting TEYZUS..."
-    )
-
-    # -----------------------------------------------------
-    # CONFIG
-    # -----------------------------------------------------
-
-    validate_config()
-
-    logger.info(
-        "Configuration validated."
-    )
-
-    # -----------------------------------------------------
-    # DATABASE
-    # -----------------------------------------------------
-
-    await init_database()
-
-    logger.info(
-        "Database initialized."
-    )
-
-    # -----------------------------------------------------
-    # MARKET
-    # -----------------------------------------------------
-
-    await market_client.start()
-
-    logger.info(
-        "Market client started."
-    )
-
-    # -----------------------------------------------------
-    # SCHEDULER
-    # -----------------------------------------------------
-
-    scheduler = Scheduler(
-        bot=telegram_bot,
-        market=market_client,
-    )
-
-    await scheduler.start()
-
-    logger.info(
-        "Scheduler started."
-    )
-
-    logger.info(
-        "TEYZUS startup completed."
-    )
-
-    return scheduler
-
-
-# =========================================================
-# SHUTDOWN
-# =========================================================
-
-async def shutdown(
-    telegram_bot: Bot | None,
-    market_client,
-    current_scheduler: Scheduler | None,
-) -> None:
-
-    logger.info(
-        "Starting TEYZUS shutdown..."
-    )
-
-    # -----------------------------------------------------
-    # SCHEDULER
-    # -----------------------------------------------------
-
-    if current_scheduler is not None:
-
-        try:
-
-            await current_scheduler.stop()
-
-        except Exception:
-
-            logger.exception(
-                "Failed to stop scheduler."
-            )
-
-    # -----------------------------------------------------
-    # MARKET
-    # -----------------------------------------------------
-
-    if market_client is not None:
-
-        try:
-
-            await market_client.close()
-
-        except Exception:
-
-            logger.exception(
-                "Failed to close market client."
-            )
-
-    # -----------------------------------------------------
-    # DATABASE
-    # -----------------------------------------------------
 
     try:
-
-        await close_database()
-
-    except Exception:
-
-        logger.exception(
-            "Failed to close database."
-        )
-
-    # -----------------------------------------------------
-    # BOT SESSION
-    # -----------------------------------------------------
-
-    if telegram_bot is not None:
-
-        try:
-
-            await telegram_bot.session.close()
-
-        except Exception:
-
-            logger.exception(
-                "Failed to close Telegram session."
-            )
-
-    logger.info(
-        "TEYZUS shutdown completed."
-    )
-
-
-# =========================================================
-# MAIN
-# =========================================================
-
-async def main() -> None:
-
-    global bot
-    global market
-    global scheduler
-
-    # -----------------------------------------------------
-    # VALIDATE CONFIG BEFORE CREATING SERVICES
-    # -----------------------------------------------------
-
-    validate_config()
-
-    logger.info(
-        "Configuration is valid."
-    )
-
-    # -----------------------------------------------------
-    # BOT
-    # -----------------------------------------------------
-
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(
-            parse_mode=ParseMode.HTML,
-        ),
-    )
-
-    logger.info(
-        "Telegram bot object created."
-    )
-
-    # -----------------------------------------------------
-    # DISPATCHER
-    # -----------------------------------------------------
-
-    dp = create_dispatcher()
-
-    # -----------------------------------------------------
-    # MARKET
-    # -----------------------------------------------------
-
-    market = create_market_client()
-
-    logger.info(
-        "Market client created."
-    )
-
-    # -----------------------------------------------------
-    # START SERVICES
-    # -----------------------------------------------------
-
-    try:
-
-        scheduler = await startup(
-            telegram_bot=bot,
-            market_client=market,
-        )
-
-        # -------------------------------------------------
-        # REMOVE WEBHOOK
-        # -------------------------------------------------
-
         await bot.delete_webhook(
-            drop_pending_updates=False
-        )
-
-        logger.info(
-            "Telegram webhook removed."
-        )
-
-        # -------------------------------------------------
-        # BOT INFORMATION
-        # -------------------------------------------------
-
-        try:
-
-            me = await bot.get_me()
-
-            logger.info(
-                "Telegram bot connected: @%s (%s)",
-                me.username,
-                me.id,
-            )
-
-        except Exception:
-
-            logger.exception(
-                "Could not retrieve Telegram bot info."
-            )
-
-        # -------------------------------------------------
-        # POLLING
-        # -------------------------------------------------
-
-        logger.info(
-            "Starting Telegram polling..."
+            drop_pending_updates=True
         )
 
         await dp.start_polling(
@@ -355,62 +96,225 @@ async def main() -> None:
         )
 
     except asyncio.CancelledError:
-
         logger.info(
-            "Main task cancelled."
+            "Telegram polling cancelled."
         )
-
         raise
-
-    except KeyboardInterrupt:
-
-        logger.info(
-            "Keyboard interrupt received."
-        )
 
     except Exception:
-
         logger.exception(
-            "Fatal TEYZUS error."
+            "Telegram polling crashed."
         )
-
         raise
 
-    finally:
 
-        await shutdown(
-            telegram_bot=bot,
-            market_client=market,
-            current_scheduler=scheduler,
-        )
+@asynccontextmanager
+async def lifespan(
+    app: FastAPI,
+):
+    global bot_task
 
-        bot = None
-        market = None
-        scheduler = None
+    logger.info(
+        "================================"
+    )
+    logger.info(
+        "TEYZUS starting..."
+    )
+    logger.info(
+        "================================"
+    )
 
+    validate_config()
 
-# =========================================================
-# ENTRY POINT
-# =========================================================
+    # -----------------------------
+    # DATABASE
+    # -----------------------------
 
-if __name__ == "__main__":
+    logger.info(
+        "Initializing database..."
+    )
+
+    await init_database()
+
+    logger.info(
+        "Database initialized."
+    )
+
+    # -----------------------------
+    # MARKET
+    # -----------------------------
+
+    logger.info(
+        "Starting market client..."
+    )
+
+    await market.start()
+
+    logger.info(
+        "Market client started."
+    )
+
+    # -----------------------------
+    # SCHEDULER
+    # -----------------------------
+
+    logger.info(
+        "Starting scheduler..."
+    )
+
+    await scheduler.start()
+
+    logger.info(
+        "Scheduler started."
+    )
+
+    # -----------------------------
+    # TELEGRAM
+    # -----------------------------
+
+    logger.info(
+        "Starting Telegram bot..."
+    )
+
+    bot_task = asyncio.create_task(
+        bot_polling(),
+        name="teyzus_bot_polling",
+    )
+
+    logger.info(
+        "TEYZUS started successfully."
+    )
 
     try:
+        yield
 
-        asyncio.run(
-            main()
+    finally:
+        logger.info(
+            "================================"
+        )
+        logger.info(
+            "TEYZUS shutting down..."
+        )
+        logger.info(
+            "================================"
         )
 
-    except KeyboardInterrupt:
+        # -------------------------
+        # TELEGRAM
+        # -------------------------
+
+        if bot_task is not None:
+
+            logger.info(
+                "Stopping Telegram bot..."
+            )
+
+            bot_task.cancel()
+
+            try:
+                await bot_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception(
+                    "Telegram bot shutdown error."
+                )
+
+        # -------------------------
+        # SCHEDULER
+        # -------------------------
 
         logger.info(
-            "TEYZUS stopped by user."
+            "Stopping scheduler..."
         )
 
-    except Exception:
+        try:
+            await scheduler.stop()
+        except Exception:
+            logger.exception(
+                "Scheduler shutdown error."
+            )
 
-        logger.exception(
-            "TEYZUS terminated with an error."
+        # -------------------------
+        # MARKET
+        # -------------------------
+
+        logger.info(
+            "Stopping market client..."
         )
 
-        sys.exit(1)
+        try:
+            await market.close()
+        except Exception:
+            logger.exception(
+                "Market client shutdown error."
+            )
+
+        # -------------------------
+        # DATABASE
+        # -------------------------
+
+        logger.info(
+            "Closing database..."
+        )
+
+        try:
+            await close_database()
+        except Exception:
+            logger.exception(
+                "Database shutdown error."
+            )
+
+        logger.info(
+            "TEYZUS stopped."
+        )
+
+
+app = FastAPI(
+    title="TEYZUS",
+    description=(
+        "TEYZUS market signal service"
+    ),
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
+@app.get("/")
+async def root():
+    return {
+        "status": "ok",
+        "service": "TEYZUS",
+    }
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "service": "TEYZUS",
+    }
+
+
+@app.get("/api/status")
+async def api_status():
+    return {
+        "status": "running",
+        "service": "TEYZUS",
+        "telegram": (
+            "starting"
+            if bot_task is None
+            else "running"
+        ),
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host=HOST,
+        port=PORT,
+        reload=False,
+    )
