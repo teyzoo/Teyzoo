@@ -1,42 +1,54 @@
-from models import Direction, MarketCandle
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from market import Candle
+from models import Direction
+from signal_engine import (
+    SignalEngine,
+)
 
 
-class PredictionResult:
-
-    def __init__(
-        self,
-        direction: Direction | None,
-        score: float,
-        reasons: list[str],
-    ):
-        self.direction = direction
-        self.score = score
-        self.reasons = reasons
+@dataclass(slots=True)
+class Prediction:
+    direction: Direction | None
+    score: float
+    reasons: list[str]
+    confirmations: int
+    total_checks: int
 
 
 class Predictor:
 
+    def __init__(
+        self,
+        engine: SignalEngine | None = None,
+    ):
+
+        self.engine = (
+            engine
+            or SignalEngine()
+        )
+
     def predict(
         self,
-        candles: list[MarketCandle],
-    ) -> PredictionResult:
+        candles: list[Candle],
+    ) -> Prediction:
 
-        """
-        Здесь будет реальная модель прогнозирования.
+        result = self.engine.analyze(
+            candles
+        )
 
-        Пока данных недостаточно, поэтому
-        намеренно возвращаем отсутствие сигнала.
-
-        Это лучше, чем генерировать
-        случайные CALL/PUT.
-        """
-
-        return PredictionResult(
-            direction=None,
-            score=0,
-            reasons=[
-                "Недостаточно данных для подтверждённого сигнала."
-            ],
+        return Prediction(
+            direction=result.direction,
+            score=result.score,
+            reasons=result.reasons,
+            confirmations=(
+                result.confirmations
+            ),
+            total_checks=(
+                result.total_checks
+            ),
         )
 
 
