@@ -36,6 +36,10 @@ logger = logging.getLogger("database")
 def normalize_database_url(
     url: str,
 ) -> str:
+    """
+    Приводит PostgreSQL URL к asyncpg-формату.
+    """
+
     if url.startswith("postgres://"):
         return url.replace(
             "postgres://",
@@ -89,12 +93,12 @@ class Base(DeclarativeBase):
 # =========================================================
 
 class UserModel(Base):
-
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(
         Integer,
         primary_key=True,
+        autoincrement=True,
     )
 
     telegram_id: Mapped[int] = mapped_column(
@@ -131,7 +135,6 @@ class UserModel(Base):
 # =========================================================
 
 class SignalModel(Base):
-
     __tablename__ = "signals"
 
     id: Mapped[int] = mapped_column(
@@ -209,7 +212,6 @@ class SignalModel(Base):
 # =========================================================
 
 class ApplicationModel(Base):
-
     __tablename__ = "applications"
 
     id: Mapped[int] = mapped_column(
@@ -242,15 +244,28 @@ class ApplicationModel(Base):
         nullable=False,
     )
 
+    processed_at: Mapped[
+        datetime | None
+    ] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
 
 # =========================================================
-# INIT / CLOSE
+# DATABASE INIT / CLOSE
 # =========================================================
 
 async def init_database() -> None:
+    """
+    Создаёт отсутствующие таблицы.
+
+    Важно:
+    create_all НЕ удаляет существующие таблицы
+    и НЕ удаляет существующие данные.
+    """
 
     async with engine.begin() as connection:
-
         await connection.run_sync(
             Base.metadata.create_all
         )
@@ -261,7 +276,6 @@ async def init_database() -> None:
 
 
 async def close_database() -> None:
-
     await engine.dispose()
 
     logger.info(
@@ -272,52 +286,6 @@ async def close_database() -> None:
 # =========================================================
 # USERS
 # =========================================================
-
-async def upsert_user(
-    telegram_id: int,
-    username: str | None = None,
-    first_name: str | None = None,
-    last_name: str | None = None,
-) -> UserModel:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(UserModel).where(
-                UserModel.telegram_id == telegram_id
-            )
-        )
-
-        user = result.scalar_one_or_none()
-
-        if user is None:
-
-            user = UserModel(
-                telegram_id=telegram_id,
-                username=username,
-                first_name=first_name,
-                last_name=last_name,
-            )
-
-            session.add(user)
-
-        else:
-
-            if username is not None:
-                user.username = username
-
-            if first_name is not None:
-                user.first_name = first_name
-
-            if last_name is not None:
-                user.last_name = last_name
-
-        await session.commit()
-
-        await session.refresh(user)
-
-        return user
-
 
 async def get_or_create_user(
     telegram_id: int,
@@ -330,7 +298,8 @@ async def get_or_create_user(
 
         result = await session.execute(
             select(UserModel).where(
-                UserModel.telegram_id == telegram_id
+                UserModel.telegram_id
+                == telegram_id
             )
         )
 
@@ -350,27 +319,46 @@ async def get_or_create_user(
             await session.commit()
             await session.refresh(user)
 
+            logger.info(
+                "New user registered: %s",
+                telegram_id,
+            )
+
             return user
 
         changed = False
 
-        if username is not None and user.username != username:
+        if user.username != username:
             user.username = username
             changed = True
 
-        if first_name is not None and user.first_name != first_name:
+        if user.first_name != first_name:
             user.first_name = first_name
             changed = True
 
-        if last_name is not None and user.last_name != last_name:
+        if user.last_name != last_name:
             user.last_name = last_name
             changed = True
 
         if changed:
             await session.commit()
-            await session.refresh(user)
 
         return user
+
+
+async def upsert_user(
+    telegram_id: int,
+    username: str | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+) -> None:
+
+    await get_or_create_user(
+        telegram_id=telegram_id,
+        username=username,
+        first_name=first_name,
+        last_name=last_name,
+    )
 
 
 async def get_active_users() -> list[int]:
@@ -380,8 +368,6 @@ async def get_active_users() -> list[int]:
         result = await session.execute(
             select(
                 UserModel.telegram_id
-            ).order_by(
-                UserModel.id.asc()
             )
         )
 
@@ -409,7 +395,7 @@ async def save_signal(
         signal = SignalModel(
             symbol=symbol,
             direction=direction,
-            score=score,
+            score=float(score),
             close_time=close_time,
             historical_probability=(
                 historical_probability
@@ -426,6 +412,13 @@ async def save_signal(
 
         await session.commit()
 
+        logger.info(
+            "Signal #%s saved: %s %s",
+            signal_id,
+            symbol,
+            direction,
+        )
+
         return signal_id
 
 
@@ -437,7 +430,8 @@ async def get_signal(
 
         result = await session.execute(
             select(SignalModel).where(
-                SignalModel.id == signal_id
+                SignalModel.id
+                == signal_id
             )
         )
 
@@ -459,14 +453,16 @@ async def get_latest_signal() -> SignalModel | None:
         return result.scalar_one_or_none()
 
 
-async def get_latest_pending_signal() -> SignalModel | None:
+async def get_latest_pending_signal(
+) -> SignalModel | None:
 
     async with SessionLocal() as session:
 
         result = await session.execute(
             select(SignalModel)
             .where(
-                SignalModel.status == "PENDING"
+                SignalModel.status
+                == "PENDING"
             )
             .order_by(
                 SignalModel.created_at.desc()
@@ -477,14 +473,17 @@ async def get_latest_pending_signal() -> SignalModel | None:
         return result.scalar_one_or_none()
 
 
-async def get_pending_signals() -> list[SignalModel]:
+async def get_pending_signals() -> list[
+    SignalModel
+]:
 
     async with SessionLocal() as session:
 
         result = await session.execute(
             select(SignalModel)
             .where(
-                SignalModel.status == "PENDING"
+                SignalModel.status
+                == "PENDING"
             )
             .order_by(
                 SignalModel.created_at.asc()
@@ -507,7 +506,8 @@ async def update_signal_result(
 
         result = await session.execute(
             select(SignalModel).where(
-                SignalModel.id == signal_id
+                SignalModel.id
+                == signal_id
             )
         )
 
@@ -517,88 +517,21 @@ async def update_signal_result(
             return False
 
         signal.status = status
-
-        if exit_price is not None:
-            signal.exit_price = exit_price
-
-        if reason is not None:
-            signal.result_reason = reason
-
-        signal.resolved_at = datetime.now(
-            timezone.utc
+        signal.exit_price = exit_price
+        signal.result_reason = reason
+        signal.resolved_at = (
+            datetime.now(timezone.utc)
         )
 
         await session.commit()
 
+        logger.info(
+            "Signal #%s resolved: %s",
+            signal_id,
+            status,
+        )
+
         return True
-
-
-# =========================================================
-# SIGNAL STATISTICS
-# =========================================================
-
-async def get_signal_statistics() -> dict[str, Any]:
-
-    async with SessionLocal() as session:
-
-        result = await session.execute(
-            select(SignalModel)
-        )
-
-        signals = list(
-            result.scalars().all()
-        )
-
-    total = len(signals)
-
-    wins = sum(
-        signal.status == "WON"
-        for signal in signals
-    )
-
-    losses = sum(
-        signal.status == "LOST"
-        for signal in signals
-    )
-
-    draws = sum(
-        signal.status == "DRAW"
-        for signal in signals
-    )
-
-    pending = sum(
-        signal.status == "PENDING"
-        for signal in signals
-    )
-
-    cancelled = sum(
-        signal.status == "CANCELLED"
-        for signal in signals
-    )
-
-    finished = (
-        wins
-        + losses
-        + draws
-    )
-
-    win_rate = (
-        wins / finished * 100
-        if finished
-        else 0.0
-    )
-
-    return {
-        "total": total,
-        "wins": wins,
-        "losses": losses,
-        "draws": draws,
-        "pending": pending,
-        "cancelled": cancelled,
-        "finished": finished,
-        "winrate": win_rate,
-        "win_rate": win_rate,
-    }
 
 
 # =========================================================
@@ -609,6 +542,13 @@ async def create_application(
     telegram_id: int,
     text: str,
 ) -> int:
+
+    text = text.strip()
+
+    if not text:
+        raise ValueError(
+            "Application text cannot be empty."
+        )
 
     async with SessionLocal() as session:
 
@@ -625,6 +565,12 @@ async def create_application(
         application_id = application.id
 
         await session.commit()
+
+        logger.info(
+            "Application #%s created by %s",
+            application_id,
+            telegram_id,
+        )
 
         return application_id
 
@@ -689,10 +635,83 @@ async def update_application_status(
             return False
 
         application.status = status
+        application.processed_at = (
+            datetime.now(timezone.utc)
+        )
 
         await session.commit()
 
         return True
+
+
+# =========================================================
+# STATISTICS
+# =========================================================
+
+async def get_signal_statistics() -> dict[str, Any]:
+
+    async with SessionLocal() as session:
+
+        result = await session.execute(
+            select(SignalModel)
+        )
+
+        signals = list(
+            result.scalars().all()
+        )
+
+    total = len(signals)
+
+    wins = sum(
+        signal.status == "WON"
+        for signal in signals
+    )
+
+    losses = sum(
+        signal.status == "LOST"
+        for signal in signals
+    )
+
+    draws = sum(
+        signal.status == "DRAW"
+        for signal in signals
+    )
+
+    cancelled = sum(
+        signal.status == "CANCELLED"
+        for signal in signals
+    )
+
+    pending = sum(
+        signal.status == "PENDING"
+        for signal in signals
+    )
+
+    finished = (
+        wins
+        + losses
+        + draws
+    )
+
+    win_rate = (
+        wins / finished * 100
+        if finished
+        else 0.0
+    )
+
+    return {
+        "total": total,
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "cancelled": cancelled,
+        "pending": pending,
+        "finished": finished,
+        "win_rate": win_rate,
+
+        # Совместимость со старым кодом.
+        "winrate": win_rate,
+    }
 
 
 # =========================================================
@@ -708,8 +727,8 @@ __all__ = [
     "engine",
     "init_database",
     "close_database",
-    "upsert_user",
     "get_or_create_user",
+    "upsert_user",
     "get_active_users",
     "save_signal",
     "get_signal",
@@ -717,9 +736,9 @@ __all__ = [
     "get_latest_pending_signal",
     "get_pending_signals",
     "update_signal_result",
-    "get_signal_statistics",
     "create_application",
     "get_application",
     "get_new_applications",
     "update_application_status",
+    "get_signal_statistics",
 ]
