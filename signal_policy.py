@@ -1,30 +1,18 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from probability import (
     ProbabilityCalibrator,
-    ProbabilityResult,
     probability_calibrator,
 )
 
 
-# ============================================================
-# НАСТРОЙКИ
-# ============================================================
+logger = logging.getLogger(
+    "signal_policy"
+)
 
-DEFAULT_MINIMUM_QUALITY = 85.0
-
-DEFAULT_MINIMUM_PROBABILITY = 70.0
-
-# Минимальное количество исторических сделок,
-# необходимое для разрешения сигнала.
-DEFAULT_MINIMUM_SAMPLES = 100
-
-
-# ============================================================
-# RESULT
-# ============================================================
 
 @dataclass(slots=True)
 class SignalPolicyResult:
@@ -37,33 +25,34 @@ class SignalPolicyResult:
 
     historical_probability: float | None
 
-    historical_samples: int
+    bucket_total: int
 
-    historical_wins: int
+    bucket_wins: int
 
-    historical_losses: int
+    bucket_losses: int
 
-    reliable_history: bool
-
-
-# ============================================================
-# POLICY
-# ============================================================
 
 class SignalPolicy:
+
+    """
+    Финальный фильтр перед отправкой сигнала.
+
+    Сигнал допускается только если:
+
+    1. Quality Score >= minimum_quality
+    2. Для этого диапазона score есть достаточно
+       исторических результатов.
+    3. Историческая вероятность >= minimum_probability.
+
+    Quality Score НЕ является вероятностью выигрыша.
+    """
 
     def __init__(
         self,
         calibrator: ProbabilityCalibrator,
-        minimum_quality: float = (
-            DEFAULT_MINIMUM_QUALITY
-        ),
-        minimum_probability: float = (
-            DEFAULT_MINIMUM_PROBABILITY
-        ),
-        minimum_samples: int = (
-            DEFAULT_MINIMUM_SAMPLES
-        ),
+        minimum_quality: float = 85.0,
+        minimum_probability: float = 70.0,
+        minimum_history: int = 100,
     ):
 
         self.calibrator = calibrator
@@ -76,170 +65,122 @@ class SignalPolicy:
             minimum_probability
         )
 
-        self.minimum_samples = (
-            minimum_samples
+        self.minimum_history = (
+            minimum_history
         )
 
-    # ========================================================
-    # EVALUATE
-    # ========================================================
+    async def refresh(self):
+
+        await self.calibrator.refresh()
 
     def evaluate(
         self,
         quality_score: float,
     ) -> SignalPolicyResult:
 
-        # ----------------------------------------------------
-        # Защита от неправильного score
-        # ----------------------------------------------------
-
-        quality_score = max(
-            0.0,
-            min(
-                100.0,
-                float(quality_score),
-            ),
+        quality_score = float(
+            quality_score
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # QUALITY
-        # ----------------------------------------------------
+        # ====================================================
 
         if (
             quality_score
             < self.minimum_quality
         ):
 
-            return self._reject(
+            return SignalPolicyResult(
+                allowed=False,
                 reason=(
-                    "Quality score "
-                    f"{quality_score:.1f}% "
-                    "ниже минимального "
-                    f"порога "
+                    "Quality Score ниже "
                     f"{self.minimum_quality:.1f}%."
                 ),
                 quality_score=quality_score,
+                historical_probability=None,
+                bucket_total=0,
+                bucket_wins=0,
+                bucket_losses=0,
             )
 
-        # ----------------------------------------------------
-        # Получаем историческую статистику
-        # ----------------------------------------------------
+        # ====================================================
+        # BUCKET
+        # ====================================================
 
-        result = (
-            self.calibrator.get_result(
+        bucket = (
+            self.calibrator.get_bucket(
                 quality_score
             )
         )
 
-        # ----------------------------------------------------
-        # Нет истории
-        # ----------------------------------------------------
+        if bucket is None:
 
-        if result.total_samples <= 0:
-
-            return self._reject(
+            return SignalPolicyResult(
+                allowed=False,
                 reason=(
-                    "Нет исторических "
-                    "данных для этого "
-                    "диапазона Quality Score."
+                    "Quality Score не "
+                    "попадает в допустимый "
+                    "диапазон."
                 ),
                 quality_score=quality_score,
+                historical_probability=None,
+                bucket_total=0,
+                bucket_wins=0,
+                bucket_losses=0,
             )
 
-        # ----------------------------------------------------
-        # Недостаточная выборка
-        # ----------------------------------------------------
+        # ====================================================
+        # HISTORY
+        # ====================================================
 
         if (
-            result.total_samples
-            < self.minimum_samples
+            bucket.total
+            < self.minimum_history
         ):
 
             return SignalPolicyResult(
                 allowed=False,
                 reason=(
                     "Недостаточно исторических "
-                    "наблюдений: "
-                    f"{result.total_samples}/"
-                    f"{self.minimum_samples}."
+                    "результатов для этого "
+                    "диапазона Quality Score."
                 ),
                 quality_score=quality_score,
-                historical_probability=(
-                    None
-                ),
-                historical_samples=(
-                    result.total_samples
-                ),
-                historical_wins=(
-                    result.wins
-                ),
-                historical_losses=(
-                    result.losses
-                ),
-                reliable_history=False,
+                historical_probability=None,
+                bucket_total=bucket.total,
+                bucket_wins=bucket.wins,
+                bucket_losses=bucket.losses,
             )
 
-        # ----------------------------------------------------
-        # История должна быть reliable
-        # ----------------------------------------------------
-
-        if not result.reliable:
-
-            return SignalPolicyResult(
-                allowed=False,
-                reason=(
-                    "Историческая статистика "
-                    "ещё недостаточно надёжна."
-                ),
-                quality_score=quality_score,
-                historical_probability=(
-                    result.probability
-                ),
-                historical_samples=(
-                    result.total_samples
-                ),
-                historical_wins=(
-                    result.wins
-                ),
-                historical_losses=(
-                    result.losses
-                ),
-                reliable_history=False,
-            )
+        # ====================================================
+        # PROBABILITY
+        # ====================================================
 
         probability = (
-            result.probability
+            self.calibrator.get_probability(
+                quality_score
+            )
         )
-
-        # ----------------------------------------------------
-        # Probability отсутствует
-        # ----------------------------------------------------
 
         if probability is None:
 
             return SignalPolicyResult(
                 allowed=False,
                 reason=(
-                    "Не удалось получить "
-                    "историческую вероятность."
+                    "Историческая вероятность "
+                    "не рассчитана."
                 ),
                 quality_score=quality_score,
                 historical_probability=None,
-                historical_samples=(
-                    result.total_samples
-                ),
-                historical_wins=(
-                    result.wins
-                ),
-                historical_losses=(
-                    result.losses
-                ),
-                reliable_history=False,
+                bucket_total=bucket.total,
+                bucket_wins=bucket.wins,
+                bucket_losses=bucket.losses,
             )
 
-        # ----------------------------------------------------
-        # Проверяем вероятность
-        # ----------------------------------------------------
+        # ====================================================
+        # PROBABILITY FILTER
+        # ====================================================
 
         if (
             probability
@@ -250,134 +191,44 @@ class SignalPolicy:
                 allowed=False,
                 reason=(
                     "Историческая вероятность "
-                    f"{probability:.1f}% "
-                    "ниже минимального "
-                    f"порога "
+                    f"{probability:.1f}% ниже "
+                    f"минимального порога "
                     f"{self.minimum_probability:.1f}%."
                 ),
                 quality_score=quality_score,
-                historical_probability=(
-                    probability
-                ),
-                historical_samples=(
-                    result.total_samples
-                ),
-                historical_wins=(
-                    result.wins
-                ),
-                historical_losses=(
-                    result.losses
-                ),
-                reliable_history=True,
+                historical_probability=probability,
+                bucket_total=bucket.total,
+                bucket_wins=bucket.wins,
+                bucket_losses=bucket.losses,
             )
 
-        # ----------------------------------------------------
-        # Сигнал разрешён
-        # ----------------------------------------------------
+        # ====================================================
+        # ACCEPT
+        # ====================================================
+
+        logger.info(
+            "Signal passed policy: "
+            "score=%.2f probability=%.2f "
+            "history=%s",
+            quality_score,
+            probability,
+            bucket.total,
+        )
 
         return SignalPolicyResult(
             allowed=True,
-            reason=(
-                "Signal passed all policy checks."
-            ),
+            reason="Signal passed all filters.",
             quality_score=quality_score,
-            historical_probability=(
-                probability
-            ),
-            historical_samples=(
-                result.total_samples
-            ),
-            historical_wins=(
-                result.wins
-            ),
-            historical_losses=(
-                result.losses
-            ),
-            reliable_history=True,
+            historical_probability=probability,
+            bucket_total=bucket.total,
+            bucket_wins=bucket.wins,
+            bucket_losses=bucket.losses,
         )
 
-    # ========================================================
-    # REJECT HELPER
-    # ========================================================
-
-    @staticmethod
-    def _reject(
-        reason: str,
-        quality_score: float,
-    ) -> SignalPolicyResult:
-
-        return SignalPolicyResult(
-            allowed=False,
-            reason=reason,
-            quality_score=quality_score,
-            historical_probability=None,
-            historical_samples=0,
-            historical_wins=0,
-            historical_losses=0,
-            reliable_history=False,
-        )
-
-    # ========================================================
-    # EXPLAIN
-    # ========================================================
-
-    def explain(
-        self,
-        quality_score: float,
-    ) -> str:
-
-        result = self.evaluate(
-            quality_score
-        )
-
-        if result.allowed:
-
-            probability_text = (
-                "неизвестно"
-                if (
-                    result.historical_probability
-                    is None
-                )
-                else (
-                    f"{result.historical_probability:.1f}%"
-                )
-            )
-
-            return (
-                "✅ SIGNAL ALLOWED\n"
-                f"Quality: "
-                f"{result.quality_score:.1f}%\n"
-                f"Historical probability: "
-                f"{probability_text}\n"
-                f"Samples: "
-                f"{result.historical_samples}\n"
-                f"Wins: "
-                f"{result.historical_wins}\n"
-                f"Losses: "
-                f"{result.historical_losses}"
-            )
-
-        return (
-            "⛔ SIGNAL REJECTED\n"
-            f"Quality: "
-            f"{result.quality_score:.1f}%\n"
-            f"Reason: "
-            f"{result.reason}\n"
-            f"Samples: "
-            f"{result.historical_samples}"
-        )
-
-
-# ============================================================
-# SINGLETON
-# ============================================================
 
 signal_policy = SignalPolicy(
     calibrator=probability_calibrator,
-
     minimum_quality=85.0,
-
     minimum_probability=70.0,
-
-    minimum_samples=100,
+    minimum_history=100,
 )
