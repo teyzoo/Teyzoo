@@ -1,5 +1,3 @@
-# config.py
-
 from __future__ import annotations
 
 import os
@@ -27,9 +25,7 @@ def get_env(
     return value
 
 
-def get_required_env(
-    name: str,
-) -> str:
+def get_required_env(name: str) -> str:
     value = get_env(name)
 
     if not value:
@@ -50,15 +46,10 @@ def get_int_env(
     )
 
     try:
-        return int(
-            value
-            if value is not None
-            else default
-        )
+        return int(value or default)
     except ValueError as exc:
         raise RuntimeError(
-            f"Environment variable {name} "
-            f"must be an integer."
+            f"Environment variable {name} must be an integer."
         ) from exc
 
 
@@ -72,15 +63,10 @@ def get_float_env(
     )
 
     try:
-        return float(
-            value
-            if value is not None
-            else default
-        )
+        return float(value or default)
     except ValueError as exc:
         raise RuntimeError(
-            f"Environment variable {name} "
-            f"must be a number."
+            f"Environment variable {name} must be a number."
         ) from exc
 
 
@@ -94,6 +80,15 @@ BOT_TOKEN: Final[str] = get_required_env(
 
 
 # =========================================================
+# DATABASE
+# =========================================================
+
+DATABASE_URL: Final[str] = get_required_env(
+    "DATABASE_URL"
+)
+
+
+# =========================================================
 # OWNER / ADMINS
 # =========================================================
 
@@ -101,7 +96,6 @@ OWNER_ID: Final[int] = get_int_env(
     "OWNER_ID",
     0,
 )
-
 
 ADMIN_IDS_RAW: Final[str] = (
     get_env(
@@ -115,8 +109,7 @@ ADMIN_IDS_RAW: Final[str] = (
 def get_admin_ids() -> set[int]:
     result: set[int] = set()
 
-    # Owner автоматически получает
-    # права администратора.
+    # OWNER автоматически считается администратором.
     if OWNER_ID > 0:
         result.add(OWNER_ID)
 
@@ -127,51 +120,33 @@ def get_admin_ids() -> set[int]:
             continue
 
         try:
-            result.add(
-                int(value)
-            )
+            result.add(int(value))
         except ValueError:
             continue
 
     return result
 
 
-ADMIN_IDS: Final[set[int]] = (
-    get_admin_ids()
-)
+ADMIN_IDS: Final[set[int]] = get_admin_ids()
 
 
-# =========================================================
-# DATABASE
-# =========================================================
+def is_admin(
+    telegram_id: int,
+) -> bool:
+    return telegram_id in ADMIN_IDS
 
-DATABASE_URL: Final[str] = (
-    get_required_env(
-        "DATABASE_URL"
+
+def is_owner(
+    telegram_id: int,
+) -> bool:
+    return (
+        OWNER_ID > 0
+        and telegram_id == OWNER_ID
     )
-)
 
 
 # =========================================================
-# MARKET API
-# =========================================================
-
-MARKET_API_URL: Final[str] = (
-    get_required_env(
-        "MARKET_API_URL"
-    )
-)
-
-
-MARKET_API_KEY: Final[str | None] = (
-    get_env(
-        "MARKET_API_KEY"
-    )
-)
-
-
-# =========================================================
-# SERVER
+# FASTAPI / RENDER
 # =========================================================
 
 HOST: Final[str] = (
@@ -182,7 +157,6 @@ HOST: Final[str] = (
     or "0.0.0.0"
 )
 
-
 PORT: Final[int] = get_int_env(
     "PORT",
     10000,
@@ -190,12 +164,32 @@ PORT: Final[int] = get_int_env(
 
 
 # =========================================================
+# MARKET API
+# =========================================================
+
+MARKET_API_URL: Final[str] = get_required_env(
+    "MARKET_API_URL"
+)
+
+MARKET_API_KEY: Final[str | None] = get_env(
+    "MARKET_API_KEY"
+)
+
+MARKET_REQUEST_TIMEOUT: Final[int] = get_int_env(
+    "MARKET_REQUEST_TIMEOUT",
+    15,
+)
+
+MARKET_CANDLE_LIMIT: Final[int] = get_int_env(
+    "MARKET_CANDLE_LIMIT",
+    200,
+)
+
+
+# =========================================================
 # SIGNAL SETTINGS
 # =========================================================
 
-# Минимальный Quality Score,
-# при котором сигнал вообще может
-# пройти фильтр.
 SIGNAL_MINIMUM_QUALITY: Final[float] = (
     get_float_env(
         "SIGNAL_MINIMUM_QUALITY",
@@ -203,8 +197,6 @@ SIGNAL_MINIMUM_QUALITY: Final[float] = (
     )
 )
 
-
-# Минимальная историческая вероятность.
 SIGNAL_MINIMUM_PROBABILITY: Final[float] = (
     get_float_env(
         "SIGNAL_MINIMUM_PROBABILITY",
@@ -212,9 +204,6 @@ SIGNAL_MINIMUM_PROBABILITY: Final[float] = (
     )
 )
 
-
-# За сколько минут до сигнала
-# отправляется предупреждение.
 SIGNAL_WARNING_MINUTES: Final[int] = (
     get_int_env(
         "SIGNAL_WARNING_MINUTES",
@@ -222,8 +211,6 @@ SIGNAL_WARNING_MINUTES: Final[int] = (
     )
 )
 
-
-# Длительность сигнала.
 SIGNAL_EXPIRY_MINUTES: Final[int] = (
     get_int_env(
         "SIGNAL_EXPIRY_MINUTES",
@@ -232,7 +219,10 @@ SIGNAL_EXPIRY_MINUTES: Final[int] = (
 )
 
 
-# Интервал основного анализа.
+# =========================================================
+# SCHEDULER
+# =========================================================
+
 SIGNAL_ANALYSIS_INTERVAL: Final[int] = (
     get_int_env(
         "SIGNAL_ANALYSIS_INTERVAL",
@@ -240,33 +230,17 @@ SIGNAL_ANALYSIS_INTERVAL: Final[int] = (
     )
 )
 
-
-# =========================================================
-# MARKET SETTINGS
-# =========================================================
-
-MARKET_REQUEST_TIMEOUT: Final[int] = (
+SIGNAL_WARNING_INTERVAL: Final[int] = (
     get_int_env(
-        "MARKET_REQUEST_TIMEOUT",
+        "SIGNAL_WARNING_INTERVAL",
         15,
     )
 )
 
-
-MARKET_CANDLE_LIMIT: Final[int] = (
+SIGNAL_RESULT_INTERVAL: Final[int] = (
     get_int_env(
-        "MARKET_CANDLE_LIMIT",
-        200,
-    )
-)
-
-
-# Минимум свечей,
-# необходимых для анализа.
-MARKET_MIN_CANDLES: Final[int] = (
-    get_int_env(
-        "MARKET_MIN_CANDLES",
-        50,
+        "SIGNAL_RESULT_INTERVAL",
+        30,
     )
 )
 
@@ -283,7 +257,7 @@ TIMEFRAMES: Final[tuple[str, ...]] = (
 
 
 # =========================================================
-# DEFAULT FOREX PAIRS
+# DEFAULT MARKET PAIRS
 # =========================================================
 
 DEFAULT_PAIRS: Final[list[str]] = [
@@ -301,44 +275,12 @@ DEFAULT_PAIRS: Final[list[str]] = [
 
 
 # =========================================================
-# DATABASE / TRACKER SETTINGS
-# =========================================================
-
-RESULT_CHECK_INTERVAL: Final[int] = (
-    get_int_env(
-        "RESULT_CHECK_INTERVAL",
-        30,
-    )
-)
-
-
-WARNING_CHECK_INTERVAL: Final[int] = (
-    get_int_env(
-        "WARNING_CHECK_INTERVAL",
-        15,
-    )
-)
-
-
-# =========================================================
-# PROBABILITY CALIBRATION
-# =========================================================
-
-PROBABILITY_MINIMUM_SAMPLES: Final[int] = (
-    get_int_env(
-        "PROBABILITY_MINIMUM_SAMPLES",
-        100,
-    )
-)
-
-
-# =========================================================
 # APPLICATION SETTINGS
 # =========================================================
 
-MAX_APPLICATION_LENGTH: Final[int] = (
+APPLICATION_MAX_LENGTH: Final[int] = (
     get_int_env(
-        "MAX_APPLICATION_LENGTH",
+        "APPLICATION_MAX_LENGTH",
         4000,
     )
 )
@@ -354,19 +296,14 @@ LOG_LEVEL: Final[str] = (
         "INFO",
     )
     or "INFO"
-).upper()
+)
 
 
 # =========================================================
-# CONFIG VALIDATION
+# VALIDATION
 # =========================================================
 
 def validate_config() -> None:
-    """
-    Проверяет основные настройки приложения
-    перед запуском.
-    """
-
     if not BOT_TOKEN:
         raise RuntimeError(
             "BOT_TOKEN is not configured."
@@ -382,23 +319,42 @@ def validate_config() -> None:
             "MARKET_API_URL is not configured."
         )
 
+    if OWNER_ID <= 0:
+        raise RuntimeError(
+            "OWNER_ID must be configured "
+            "with a valid Telegram user ID."
+        )
+
     if PORT <= 0 or PORT > 65535:
         raise RuntimeError(
             "PORT must be between 1 and 65535."
         )
 
-    if (
-        SIGNAL_MINIMUM_QUALITY < 0
-        or SIGNAL_MINIMUM_QUALITY > 100
+    if MARKET_REQUEST_TIMEOUT <= 0:
+        raise RuntimeError(
+            "MARKET_REQUEST_TIMEOUT must be greater than 0."
+        )
+
+    if MARKET_CANDLE_LIMIT < 20:
+        raise RuntimeError(
+            "MARKET_CANDLE_LIMIT must be at least 20."
+        )
+
+    if MARKET_CANDLE_LIMIT > 5000:
+        raise RuntimeError(
+            "MARKET_CANDLE_LIMIT cannot exceed 5000."
+        )
+
+    if not (
+        0 <= SIGNAL_MINIMUM_QUALITY <= 100
     ):
         raise RuntimeError(
             "SIGNAL_MINIMUM_QUALITY must be "
             "between 0 and 100."
         )
 
-    if (
-        SIGNAL_MINIMUM_PROBABILITY < 0
-        or SIGNAL_MINIMUM_PROBABILITY > 100
+    if not (
+        0 <= SIGNAL_MINIMUM_PROBABILITY <= 100
     ):
         raise RuntimeError(
             "SIGNAL_MINIMUM_PROBABILITY must be "
@@ -417,91 +373,27 @@ def validate_config() -> None:
 
     if SIGNAL_ANALYSIS_INTERVAL <= 0:
         raise RuntimeError(
-            "SIGNAL_ANALYSIS_INTERVAL must be "
-            "greater than 0."
+            "SIGNAL_ANALYSIS_INTERVAL must be greater than 0."
         )
 
-    if MARKET_REQUEST_TIMEOUT <= 0:
+    if SIGNAL_WARNING_INTERVAL <= 0:
         raise RuntimeError(
-            "MARKET_REQUEST_TIMEOUT must be "
-            "greater than 0."
+            "SIGNAL_WARNING_INTERVAL must be greater than 0."
         )
 
-    if MARKET_CANDLE_LIMIT < 20:
+    if SIGNAL_RESULT_INTERVAL <= 0:
         raise RuntimeError(
-            "MARKET_CANDLE_LIMIT must be "
-            "at least 20."
+            "SIGNAL_RESULT_INTERVAL must be greater than 0."
         )
 
-    if MARKET_CANDLE_LIMIT > 5000:
+    if APPLICATION_MAX_LENGTH <= 0:
         raise RuntimeError(
-            "MARKET_CANDLE_LIMIT cannot exceed 5000."
-        )
-
-    if MARKET_MIN_CANDLES < 20:
-        raise RuntimeError(
-            "MARKET_MIN_CANDLES must be "
-            "at least 20."
-        )
-
-    if not TIMEFRAMES:
-        raise RuntimeError(
-            "TIMEFRAMES cannot be empty."
-        )
-
-    if not DEFAULT_PAIRS:
-        raise RuntimeError(
-            "DEFAULT_PAIRS cannot be empty."
-        )
-
-    if RESULT_CHECK_INTERVAL <= 0:
-        raise RuntimeError(
-            "RESULT_CHECK_INTERVAL must be "
-            "greater than 0."
-        )
-
-    if WARNING_CHECK_INTERVAL <= 0:
-        raise RuntimeError(
-            "WARNING_CHECK_INTERVAL must be "
-            "greater than 0."
-        )
-
-    if PROBABILITY_MINIMUM_SAMPLES <= 0:
-        raise RuntimeError(
-            "PROBABILITY_MINIMUM_SAMPLES must be "
-            "greater than 0."
-        )
-
-    if MAX_APPLICATION_LENGTH <= 0:
-        raise RuntimeError(
-            "MAX_APPLICATION_LENGTH must be "
-            "greater than 0."
+            "APPLICATION_MAX_LENGTH must be greater than 0."
         )
 
 
-__all__ = [
-    "BOT_TOKEN",
-    "OWNER_ID",
-    "ADMIN_IDS",
-    "DATABASE_URL",
-    "MARKET_API_URL",
-    "MARKET_API_KEY",
-    "HOST",
-    "PORT",
-    "SIGNAL_MINIMUM_QUALITY",
-    "SIGNAL_MINIMUM_PROBABILITY",
-    "SIGNAL_WARNING_MINUTES",
-    "SIGNAL_EXPIRY_MINUTES",
-    "SIGNAL_ANALYSIS_INTERVAL",
-    "MARKET_REQUEST_TIMEOUT",
-    "MARKET_CANDLE_LIMIT",
-    "MARKET_MIN_CANDLES",
-    "TIMEFRAMES",
-    "DEFAULT_PAIRS",
-    "RESULT_CHECK_INTERVAL",
-    "WARNING_CHECK_INTERVAL",
-    "PROBABILITY_MINIMUM_SAMPLES",
-    "MAX_APPLICATION_LENGTH",
-    "LOG_LEVEL",
-    "validate_config",
-]
+# =========================================================
+# STARTUP VALIDATION
+# =========================================================
+
+validate_config()
