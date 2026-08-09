@@ -2,46 +2,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from indicators import (
-    calculate_indicators,
-)
-
+from indicators import calculate_indicators
 from market import Candle
-
 from models import Direction
 
 
 @dataclass(slots=True)
 class AnalysisResult:
-
     direction: Direction | None
-
     score: float
-
     reasons: list[str]
-
     confirmations: int
-
     total_checks: int
 
 
 class SignalEngine:
-
-    """
-    Базовый технический анализ.
-
-    Используются:
-
-    - EMA
-    - RSI
-    - MACD
-    - Bollinger Bands
-
-    Важно:
-
-    Нейтральные индикаторы не дают
-    дополнительного подтверждения.
-    """
 
     def analyze(
         self,
@@ -49,7 +24,6 @@ class SignalEngine:
     ) -> AnalysisResult:
 
         if len(candles) < 50:
-
             return AnalysisResult(
                 direction=None,
                 score=0.0,
@@ -60,28 +34,19 @@ class SignalEngine:
                 total_checks=0,
             )
 
-        indicators = (
-            calculate_indicators(
-                candles
-            )
+        indicators = calculate_indicators(
+            candles
         )
 
         bullish = 0
         bearish = 0
+        checks = 0
 
         reasons: list[str] = []
 
-        checks = 0
-
-        # ====================================================
-        # EMA
-        # ====================================================
-
         if (
-            indicators.ema_fast
-            is not None
-            and indicators.ema_slow
-            is not None
+            indicators.ema_fast is not None
+            and indicators.ema_slow is not None
         ):
 
             checks += 1
@@ -90,73 +55,39 @@ class SignalEngine:
                 indicators.ema_fast
                 > indicators.ema_slow
             ):
-
                 bullish += 1
-
                 reasons.append(
-                    "EMA подтверждает рост."
+                    "EMA: bullish"
                 )
 
             elif (
                 indicators.ema_fast
                 < indicators.ema_slow
             ):
-
                 bearish += 1
-
                 reasons.append(
-                    "EMA подтверждает снижение."
+                    "EMA: bearish"
                 )
-
-            else:
-
-                reasons.append(
-                    "EMA нейтральна."
-                )
-
-        # ====================================================
-        # RSI
-        # ====================================================
 
         if indicators.rsi is not None:
 
             checks += 1
 
-            rsi = float(
-                indicators.rsi
-            )
-
-            if rsi <= 30:
-
+            if indicators.rsi < 35:
                 bullish += 1
-
                 reasons.append(
-                    f"RSI перепродан: {rsi:.1f}."
+                    "RSI: oversold"
                 )
 
-            elif rsi >= 70:
-
+            elif indicators.rsi > 65:
                 bearish += 1
-
                 reasons.append(
-                    f"RSI перекуплен: {rsi:.1f}."
+                    "RSI: overbought"
                 )
-
-            else:
-
-                reasons.append(
-                    f"RSI нейтрален: {rsi:.1f}."
-                )
-
-        # ====================================================
-        # MACD
-        # ====================================================
 
         if (
-            indicators.macd
-            is not None
-            and indicators.macd_signal
-            is not None
+            indicators.macd is not None
+            and indicators.macd_signal is not None
         ):
 
             checks += 1
@@ -165,33 +96,19 @@ class SignalEngine:
                 indicators.macd
                 > indicators.macd_signal
             ):
-
                 bullish += 1
-
                 reasons.append(
-                    "MACD подтверждает рост."
+                    "MACD: bullish"
                 )
 
             elif (
                 indicators.macd
                 < indicators.macd_signal
             ):
-
                 bearish += 1
-
                 reasons.append(
-                    "MACD подтверждает снижение."
+                    "MACD: bearish"
                 )
-
-            else:
-
-                reasons.append(
-                    "MACD нейтрален."
-                )
-
-        # ====================================================
-        # BOLLINGER
-        # ====================================================
 
         if (
             indicators.bollinger_upper
@@ -202,46 +119,25 @@ class SignalEngine:
 
             checks += 1
 
-            price = float(
+            if (
                 indicators.price
-            )
-
-            upper = float(
-                indicators.bollinger_upper
-            )
-
-            lower = float(
-                indicators.bollinger_lower
-            )
-
-            if price <= lower:
-
+                <= indicators.bollinger_lower
+            ):
                 bullish += 1
-
                 reasons.append(
-                    "Цена у нижней полосы Bollinger."
+                    "Bollinger: lower band"
                 )
 
-            elif price >= upper:
-
+            elif (
+                indicators.price
+                >= indicators.bollinger_upper
+            ):
                 bearish += 1
-
                 reasons.append(
-                    "Цена у верхней полосы Bollinger."
+                    "Bollinger: upper band"
                 )
-
-            else:
-
-                reasons.append(
-                    "Цена внутри Bollinger."
-                )
-
-        # ====================================================
-        # NO CHECKS
-        # ====================================================
 
         if checks == 0:
-
             return AnalysisResult(
                 direction=None,
                 score=0.0,
@@ -252,58 +148,35 @@ class SignalEngine:
                 total_checks=0,
             )
 
-        # ====================================================
-        # CONFLICT
-        # ====================================================
-
         if bullish == bearish:
-
             return AnalysisResult(
                 direction=None,
                 score=0.0,
                 reasons=[
-                    *reasons,
-                    "Нет единого направления."
+                    "Индикаторы конфликтуют."
                 ],
                 confirmations=0,
                 total_checks=checks,
             )
 
-        # ====================================================
-        # UP
-        # ====================================================
-
         if bullish > bearish:
-
-            score = (
-                bullish
-                / checks
-                * 100.0
-            )
-
-            return AnalysisResult(
-                direction=Direction.UP,
-                score=score,
-                reasons=reasons,
-                confirmations=bullish,
-                total_checks=checks,
-            )
-
-        # ====================================================
-        # DOWN
-        # ====================================================
+            confirmations = bullish
+            direction = Direction.UP
+        else:
+            confirmations = bearish
+            direction = Direction.DOWN
 
         score = (
-            bearish
+            confirmations
             / checks
-            * 100.0
+            * 100
         )
 
         return AnalysisResult(
-            direction=Direction.DOWN,
+            direction=direction,
             score=score,
             reasons=reasons,
-            confirmations=bearish,
+            confirmations=confirmations,
             total_checks=checks,
         )
 
