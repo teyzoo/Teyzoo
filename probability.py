@@ -5,42 +5,58 @@ from dataclasses import dataclass
 
 @dataclass(slots=True)
 class ProbabilityBucket:
+
     minimum_score: float
+
     maximum_score: float
 
-    total: int = 0
-    wins: int = 0
+    total: int
 
-    @property
-    def probability(self) -> float | None:
+    wins: int
 
-        if self.total == 0:
-            return None
-
-        return (
-            self.wins
-            / self.total
-            * 100
-        )
+    probability: float
 
 
 class ProbabilityCalibrator:
 
-    def __init__(
-        self,
-        minimum_samples: int = 100,
-    ):
-
-        self.minimum_samples = (
-            minimum_samples
-        )
+    def __init__(self):
 
         self.buckets = [
-            ProbabilityBucket(50, 60),
-            ProbabilityBucket(60, 70),
-            ProbabilityBucket(70, 80),
-            ProbabilityBucket(80, 90),
-            ProbabilityBucket(90, 101),
+            ProbabilityBucket(
+                50,
+                60,
+                0,
+                0,
+                0.0,
+            ),
+            ProbabilityBucket(
+                60,
+                70,
+                0,
+                0,
+                0.0,
+            ),
+            ProbabilityBucket(
+                70,
+                80,
+                0,
+                0,
+                0.0,
+            ),
+            ProbabilityBucket(
+                80,
+                90,
+                0,
+                0,
+                0.0,
+            ),
+            ProbabilityBucket(
+                90,
+                101,
+                0,
+                0,
+                0.0,
+            ),
         ]
 
     def _find_bucket(
@@ -55,6 +71,7 @@ class ProbabilityCalibrator:
                 <= score
                 < bucket.maximum_score
             ):
+
                 return bucket
 
         return None
@@ -77,6 +94,12 @@ class ProbabilityCalibrator:
         if won:
             bucket.wins += 1
 
+        bucket.probability = (
+            bucket.wins
+            / bucket.total
+            * 100
+        )
+
     def get_probability(
         self,
         score: float,
@@ -89,10 +112,7 @@ class ProbabilityCalibrator:
         if bucket is None:
             return None
 
-        if (
-            bucket.total
-            < self.minimum_samples
-        ):
+        if bucket.total < 100:
             return None
 
         return bucket.probability
