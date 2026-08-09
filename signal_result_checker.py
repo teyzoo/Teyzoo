@@ -1,162 +1,94 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 
-from database import (
-    get_pending_signals,
-    update_signal_result,
-)
-from market import (
-    MarketClient,
-    MarketDataError,
-)
 from models import Direction
-from time_utils import (
-    MOSCOW,
-)
+
 
 logger = logging.getLogger(
     "signal_results"
 )
 
 
-def parse_close_time(
-    value: str,
-    reference: datetime,
-) -> datetime:
+@dataclass(slots=True)
+class SignalCheckResult:
+    signal_id: int
+    direction: Direction
 
-    value = value.replace(
-        " МСК",
-        "",
-    ).strip()
+    entry_price: float
+    exit_price: float
 
-    hour, minute = (
-        value.split(":")
-    )
+    won: bool
 
-    result = reference.replace(
-        hour=int(hour),
-        minute=int(minute),
-        second=0,
-        microsecond=0,
-    )
+    checked_at: datetime
 
-    if result < reference:
-        result = result.replace(
-            day=result.day,
+    reason: str
+
+
+def check_signal_result(
+    signal_id: int,
+    direction: Direction,
+    entry_price: float,
+    exit_price: float,
+    checked_at: datetime,
+) -> SignalCheckResult:
+
+    if entry_price <= 0:
+        raise ValueError(
+            "Entry price должен быть больше 0."
         )
 
-    return result
+    if exit_price <= 0:
+        raise ValueError(
+            "Exit price должен быть больше 0."
+        )
 
+    if direction == Direction.UP:
 
-async def check_pending_signals(
-    market: MarketClient,
-) -> None:
+        won = (
+            exit_price
+            > entry_price
+        )
 
-    signals = await get_pending_signals()
+        reason = (
+            "Цена закрытия выше "
+            "цены входа."
+            if won
+            else
+            "Цена закрытия не выше "
+            "цены входа."
+        )
 
-    if not signals:
-        return
+    elif direction == Direction.DOWN:
 
-    now = datetime.now(MOSCOW)
+        won = (
+            exit_price
+            < entry_price
+        )
 
-    for signal in signals:
+        reason = (
+            "Цена закрытия ниже "
+            "цены входа."
+            if won
+            else
+            "Цена закрытия не ниже "
+            "цены входа."
+        )
 
-        try:
+    else:
 
-            close_time = parse_close_time(
-                signal["close_time"],
-                now,
-            )
+        raise ValueError(
+            f"Неизвестное направление: {direction}"
+        )
 
-            if now < close_time:
-                continue
-
-            candles = await market.get_candles(
-                symbol=signal["symbol"],
-                timeframe="1m",
-                limit=10,
-            )
-
-            if not candles:
-                continue
-
-            exit_candle = candles[-1]
-
-            exit_price = exit_candle.close
-
-            entry_price = (
-                signal["entry_price"]
-            )
-
-            if entry_price is None:
-                entry_price = exit_price
-
-            direction = (
-                signal["direction"]
-            )
-
-            if direction == Direction.UP.value:
-
-                if exit_price > entry_price:
-                    result = "WIN"
-
-                elif exit_price < entry_price:
-                    result = "LOSS"
-
-                else:
-                    result = "DRAW"
-
-            elif direction == Direction.DOWN.value:
-
-                if exit_price < entry_price:
-                    result = "WIN"
-
-                elif exit_price > entry_price:
-                    result = "LOSS"
-
-                else:
-                    result = "DRAW"
-
-            else:
-                logger.warning(
-                    "Unknown direction for signal %s",
-                    signal["id"],
-                )
-                continue
-
-            await update_signal_result(
-                signal_id=int(
-                    signal["id"]
-                ),
-                result=result,
-                entry_price=float(
-                    entry_price
-                ),
-                exit_price=float(
-                    exit_price
-                ),
-            )
-
-            logger.info(
-                "Signal #%s result: %s",
-                signal["id"],
-                result,
-            )
-
-        except MarketDataError as exc:
-
-            logger.warning(
-                "Market error while checking "
-                "signal %s: %s",
-                signal["id"],
-                exc,
-            )
-
-        except Exception:
-
-            logger.exception(
-                "Failed to check signal %s",
-                signal["id"],
-            )
+    return SignalCheckResult(
+        signal_id=signal_id,
+        direction=direction,
+        entry_price=entry_price,
+        exit_price=exit_price,
+        won=won,
+        checked_at=checked_at,
+        reason=reason,
+    )
