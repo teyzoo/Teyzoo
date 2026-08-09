@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from datetime import datetime
+from enum import Enum
 
 
 class Direction(str, Enum):
@@ -27,7 +27,6 @@ class Signal:
     exit_price: float | None
 
     score: float
-
     historical_probability: float | None
 
     entry_time: datetime
