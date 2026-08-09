@@ -4,38 +4,31 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from config import ADMIN_IDS
+from config import OWNER_ID
 from database import (
-    get_active_users,
-    get_recent_signals,
+    get_signal_statistics,
 )
 
 
-router = Router(
-    name="admin"
-)
+router = Router()
 
 
-def is_admin(
-    telegram_id: int,
+def is_owner(
+    message: Message,
 ) -> bool:
 
-    return telegram_id in ADMIN_IDS
+    return (
+        message.from_user is not None
+        and message.from_user.id == OWNER_ID
+    )
 
 
-@router.message(
-    Command("admin")
-)
+@router.message(Command("admin"))
 async def admin_handler(
     message: Message,
 ):
 
-    if message.from_user is None:
-        return
-
-    if not is_admin(
-        message.from_user.id
-    ):
+    if not is_owner(message):
 
         await message.answer(
             "⛔ Доступ запрещён."
@@ -43,44 +36,31 @@ async def admin_handler(
 
         return
 
-    users = (
-        await get_active_users()
-    )
-
-    signals = (
-        await get_recent_signals(
-            limit=10
-        )
+    stats = (
+        await get_signal_statistics()
     )
 
     text = (
         "👑 <b>TEYZUS ADMIN</b>\n\n"
-        f"👥 Активных пользователей: "
-        f"<b>{len(users)}</b>\n"
-        f"📊 Последних сигналов: "
-        f"<b>{len(signals)}</b>\n\n"
+
+        f"📊 Завершено: "
+        f"<b>{stats['total']}</b>\n"
+
+        f"🟢 WIN: "
+        f"<b>{stats['wins']}</b>\n"
+
+        f"🔴 LOSS: "
+        f"<b>{stats['losses']}</b>\n"
+
+        f"⚪ DRAW: "
+        f"<b>{stats['draws']}</b>\n"
+
+        f"⏳ Pending: "
+        f"<b>{stats['pending']}</b>\n\n"
+
+        f"🎯 WIN RATE: "
+        f"<b>{stats['win_rate']:.2f}%</b>"
     )
-
-    if signals:
-
-        text += (
-            "Последние сигналы:\n\n"
-        )
-
-        for signal in signals:
-
-            text += (
-                f"#{signal.id} "
-                f"{signal.symbol} "
-                f"{signal.direction} "
-                f"{signal.score:.1f}%\n"
-            )
-
-    else:
-
-        text += (
-            "Сигналов пока нет."
-        )
 
     await message.answer(
         text
