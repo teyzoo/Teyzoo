@@ -1,0 +1,65 @@
+from __future__ import annotations
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+@dataclass(slots=True)
+class SignalWarning:
+    signal_id: int
+    symbol: str
+    direction: str
+    close_time: datetime
+    @property
+    def warning_time(self) -> datetime:
+        """
+        Время предупреждения:
+        ровно за 2 минуты до закрытия сделки.
+        """
+        return self.close_time - timedelta(minutes=2)
+def create_warning(
+    signal_id: int,
+    symbol: str,
+    direction: str,
+    close_time: datetime,
+) -> SignalWarning:
+    return SignalWarning(
+        signal_id=signal_id,
+        symbol=symbol,
+        direction=direction,
+        close_time=close_time,
+    )
+def is_warning_time(
+    warning: SignalWarning,
+    now: datetime,
+) -> bool:
+    """
+    Возвращает True, если наступило время
+    отправки предупреждения.
+    Допускается небольшое окно в 30 секунд,
+    чтобы scheduler не пропустил уведомление.
+    """
+    warning_time = warning.warning_time
+    difference = (
+        now - warning_time
+    ).total_seconds()
+    return 0 <= difference <= 30
+def format_warning(
+    warning: SignalWarning,
+) -> str:
+    if warning.direction == "UP":
+        direction = "📈 <b>ВВЕРХ</b>"
+    elif warning.direction == "DOWN":
+        direction = "📉 <b>ВНИЗ</b>"
+    else:
+        direction = "❔ <b>НЕИЗВЕСТНО</b>"
+    close_text = warning.close_time.strftime(
+        "%H:%M"
+    )
+    return (
+        "⚠️ <b>ПРЕДУПРЕЖДЕНИЕ</b>\n\n"
+        f"💱 Пара: <b>{warning.symbol}</b>\n"
+        f"{direction}\n\n"
+        "⏰ До закрытия сделки "
+        "<b>2 минуты</b>.\n\n"
+        f"🔒 Закрыть сделку: "
+        f"<b>{close_text} МСК</b>\n\n"
+        f"🆔 Signal #{warning.signal_id}"
+    )
