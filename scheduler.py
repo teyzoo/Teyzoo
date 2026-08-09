@@ -12,7 +12,7 @@ from database import (
 )
 
 from market import (
-    market_client,
+    MarketClient,
     MarketDataError,
 )
 
@@ -32,7 +32,7 @@ from time_utils import (
 
 
 logger = logging.getLogger(
-    __name__
+    "scheduler"
 )
 
 
@@ -41,7 +41,9 @@ async def send_to_users(
     text: str,
 ):
 
-    users = await get_active_users()
+    users = (
+        await get_active_users()
+    )
 
     for telegram_id in users:
 
@@ -56,7 +58,7 @@ async def send_to_users(
         except Exception as exc:
 
             logger.warning(
-                "Ошибка отправки %s: %s",
+                "Send error %s: %s",
                 telegram_id,
                 exc,
             )
@@ -64,21 +66,20 @@ async def send_to_users(
 
 async def run_signal_cycle(
     bot: Bot,
+    market: MarketClient,
 ):
 
     logger.info(
-        "Starting signal analysis."
-    )
-
-    close_time = (
-        next_20_minute_mark()
+        "Starting market analysis."
     )
 
     try:
 
         selector = PairSelector(
-            market=market_client,
-            quality_filter=quality_filter,
+            market=market,
+            quality_filter=(
+                quality_filter
+            ),
         )
 
         best = (
@@ -96,8 +97,8 @@ async def run_signal_cycle(
             bot,
             (
                 "⛔ <b>NO SIGNAL</b>\n\n"
-                "Не удалось получить "
-                "актуальные рыночные данные.\n\n"
+                "Актуальные данные рынка "
+                "недоступны.\n\n"
                 "❌ Сделка не выдаётся."
             ),
         )
@@ -107,15 +108,14 @@ async def run_signal_cycle(
     except Exception:
 
         logger.exception(
-            "Unexpected signal error."
+            "Signal cycle failed."
         )
 
         await send_to_users(
             bot,
             (
                 "⛔ <b>NO SIGNAL</b>\n\n"
-                "Во время анализа произошла "
-                "ошибка.\n\n"
+                "Анализ завершился ошибкой.\n\n"
                 "❌ Сделка не выдаётся."
             ),
         )
@@ -128,12 +128,8 @@ async def run_signal_cycle(
             bot,
             (
                 "⛔ <b>NO SIGNAL</b>\n\n"
-                "Ни одна валютная пара "
-                "не прошла строгий фильтр.\n\n"
-                f"⏰ Ближайшее время закрытия: "
-                f"<b>{format_moscow_time(close_time)}</b>\n\n"
-                "❌ Слабые сделки "
-                "автоматически отфильтрованы."
+                "Ни одна пара не прошла "
+                "строгий фильтр."
             ),
         )
 
@@ -147,39 +143,51 @@ async def run_signal_cycle(
             bot,
             (
                 "⛔ <b>NO SIGNAL</b>\n\n"
-                "Не найдено подтверждённое "
-                "направление."
+                "Нет единого подтверждённого "
+                "направления."
             ),
         )
 
         return
 
+    close_time = (
+        next_20_minute_mark()
+    )
+
     if result.direction.value == "UP":
 
-        direction_text = (
+        direction = (
             "📈 <b>ВВЕРХ</b>"
         )
 
     else:
 
-        direction_text = (
+        direction = (
             "📉 <b>ВНИЗ</b>"
         )
 
-    signal_id = await save_signal(
-        symbol=best.symbol,
-        direction=result.direction.value,
-        score=result.quality_score,
-        close_time=(
-            format_moscow_time(
-                close_time
-            )
-        ),
+    signal_id = (
+        await save_signal(
+            symbol=best.symbol,
+            direction=(
+                result.direction.value
+            ),
+            score=(
+                result.quality_score
+            ),
+            close_time=(
+                format_moscow_time(
+                    close_time
+                )
+            ),
+        )
     )
 
-    reasons_text = "\n".join(
+    reasons = "\n".join(
         f"• {reason}"
-        for reason in result.reasons[:8]
+        for reason in (
+            result.reasons[:8]
+        )
     )
 
     text = (
@@ -188,26 +196,31 @@ async def run_signal_cycle(
         f"💱 Пара: "
         f"<b>{best.symbol}</b>\n\n"
 
-        f"{direction_text}\n\n"
+        f"{direction}\n\n"
 
         "⏰ <b>ЗАКРЫТЬ СДЕЛКУ:</b>\n"
-        f"<b>{format_moscow_time(close_time)}</b>\n\n"
+        f"<b>"
+        f"{format_moscow_time(close_time)}"
+        f"</b>\n\n"
 
-        f"🔥 Качество: "
-        f"<b>{result.quality_score:.1f}%</b>\n\n"
+        f"🎯 Quality score: "
+        f"<b>"
+        f"{result.quality_score:.1f}%"
+        f"</b>\n\n"
 
-        f"✅ Подтверждения: "
-        f"<b>{result.confirmations}/"
-        f"{result.total_checks}</b>\n\n"
+        f"✅ Подтверждений: "
+        f"<b>"
+        f"{result.confirmations}/"
+        f"{result.total_checks}"
+        f"</b>\n\n"
 
-        "📊 Анализ:\n"
-        f"{reasons_text}\n\n"
+        "📊 Причины:\n"
+        f"{reasons}\n\n"
 
         f"🆔 Signal #{signal_id}\n\n"
 
-        "⚠️ Качество — это "
-        "внутренняя оценка модели, "
-        "не гарантия результата."
+        "⚠️ Quality score не является "
+        "гарантией выигрыша."
     )
 
     await send_to_users(
@@ -218,6 +231,7 @@ async def run_signal_cycle(
 
 async def signal_scheduler(
     bot: Bot,
+    market: MarketClient,
 ):
 
     while True:
@@ -229,7 +243,9 @@ async def signal_scheduler(
             )
 
             target = (
-                next_20_minute_mark(now)
+                next_20_minute_mark(
+                    now
+                )
             )
 
             seconds = (
@@ -237,12 +253,13 @@ async def signal_scheduler(
             ).total_seconds()
 
             if seconds < 1:
+
                 seconds = 1
 
             logger.info(
-                "Следующий цикл анализа: %s",
+                "Next cycle: %s",
                 target.strftime(
-                    "%Y-%m-%d %H:%M:%S %Z"
+                    "%H:%M:%S"
                 ),
             )
 
@@ -251,10 +268,12 @@ async def signal_scheduler(
             )
 
             await run_signal_cycle(
-                bot
+                bot,
+                market,
             )
 
         except asyncio.CancelledError:
+
             raise
 
         except Exception:
