@@ -10,7 +10,15 @@ class Direction(str, Enum):
 
 class SignalStatus(str, Enum):
     PENDING = "PENDING"
-    WON = "WON"
-    LOST = "LOST"
+    WARNING = "WARNING"
+    ACTIVE = "ACTIVE"
+    FINISHED = "FINISHED"
     CANCELLED = "CANCELLED"
-    UNKNOWN = "UNKNOWN"
+
+
+class ApplicationStatus(str, Enum):
+    NEW = "NEW"
+    IN_PROGRESS = "IN_PROGRESS"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    CLOSED = "CLOSED"
