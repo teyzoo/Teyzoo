@@ -1,21 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime
 
-from market import (
-    MarketClient,
-    MarketDataError,
+from aiogram import Bot
+
+from market import MarketClient
+
+from signal_result_checker import (
+    SignalResultChecker,
 )
-from models import Direction
-from signal_results import (
-    SignalCheckResult,
-    check_signal_result,
+
+from signal_result_handler import (
+    handle_signal_result,
 )
-from signal_tracker import (
-    TrackedSignal,
+
+from database import (
+    get_pending_signals,
 )
-from time_utils import MOSCOW
 
 
 logger = logging.getLogger(
@@ -23,55 +25,88 @@ logger = logging.getLogger(
 )
 
 
-async def get_close_price(
+async def check_results_once(
+    bot: Bot,
     market: MarketClient,
-    symbol: str,
-) -> float:
+) -> int:
 
-    candles = await market.get_candles(
-        symbol=symbol,
-        timeframe="1m",
-        limit=5,
+    checker = SignalResultChecker(
+        market
     )
 
-    if not candles:
+    pending_before = (
+        await get_pending_signals()
+    )
 
-        raise MarketDataError(
-            "Не удалось получить свечи "
-            "для проверки результата."
-        )
+    pending_ids = {
+        signal.id
+        for signal in pending_before
+    }
 
-    return candles[-1].close
+    await checker.check_once()
+
+    pending_after = (
+        await get_pending_signals()
+    )
+
+    pending_after_ids = {
+        signal.id
+        for signal in pending_after
+    }
+
+    resolved_ids = (
+        pending_ids
+        - pending_after_ids
+    )
+
+    for signal_id in resolved_ids:
+
+        try:
+
+            await handle_signal_result(
+                bot,
+                signal_id,
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Could not send result "
+                "for signal #%s.",
+                signal_id,
+            )
+
+    return len(resolved_ids)
 
 
-async def check_tracked_signal(
+async def result_checker_loop(
+    bot: Bot,
     market: MarketClient,
-    signal: TrackedSignal,
-) -> SignalCheckResult:
-
-    now = datetime.now(
-        MOSCOW
-    )
-
-    exit_price = await get_close_price(
-        market=market,
-        symbol=signal.symbol,
-    )
-
-    result = check_signal_result(
-        signal_id=signal.signal_id,
-        direction=signal.direction,
-        entry_price=signal.entry_price,
-        exit_price=exit_price,
-        checked_at=now,
-    )
+    interval: int = 30,
+) -> None:
 
     logger.info(
-        "Signal #%s result: %s",
-        signal.signal_id,
-        "WIN"
-        if result.won
-        else "LOSS",
+        "Result checker started."
     )
 
-    return result
+    while True:
+
+        try:
+
+            await check_results_once(
+                bot=bot,
+                market=market,
+            )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception:
+
+            logger.exception(
+                "Result checker error."
+            )
+
+        await asyncio.sleep(
+            interval
+        )
