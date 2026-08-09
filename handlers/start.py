@@ -10,15 +10,15 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from database import register_user
+from database import (
+    get_or_create_user,
+)
 
+
+router = Router()
 
 logger = logging.getLogger(
     "handlers.start"
-)
-
-router = Router(
-    name="start"
 )
 
 
@@ -31,12 +31,15 @@ def main_keyboard() -> ReplyKeyboardMarkup:
                     text="📊 Сигнал"
                 ),
                 KeyboardButton(
-                    text="📈 Статистика"
+                    text="📈 Последний сигнал"
                 ),
             ],
             [
                 KeyboardButton(
-                    text="📨 Подать заявку"
+                    text="📝 Оставить заявку"
+                ),
+                KeyboardButton(
+                    text="ℹ️ Помощь"
                 ),
             ],
         ],
@@ -52,51 +55,52 @@ async def start_handler(
     if message.from_user is None:
         return
 
-    user_id = (
-        message.from_user.id
+    user = await get_or_create_user(
+        telegram_id=message.from_user.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
     )
 
-    username = (
-        message.from_user.username
+    logger.info(
+        "User registered: %s",
+        user.telegram_id,
     )
-
-    first_name = (
-        message.from_user.first_name
-        or ""
-    )
-
-    try:
-
-        await register_user(
-            telegram_id=user_id,
-            username=username,
-            first_name=first_name,
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Failed to register user %s",
-            user_id,
-        )
-
-        await message.answer(
-            "⚠️ Не удалось зарегистрировать "
-            "профиль. Попробуйте ещё раз."
-        )
-
-        return
 
     await message.answer(
         (
             "👋 <b>Добро пожаловать в TEYZUS</b>\n\n"
-            "Бот анализирует рынок и отправляет "
-            "только сигналы, прошедшие фильтры.\n\n"
-            "⏰ Анализ выполняется каждые 20 минут.\n"
-            "⚠️ За 2 минуты до времени сигнала "
-            "будет отправлено предупреждение.\n\n"
-            "Нажмите «📊 Сигнал», чтобы посмотреть "
-            "последний доступный сигнал."
+            "🤖 Бот анализирует рынок и "
+            "выдаёт только сигналы, которые "
+            "прошли заданные фильтры.\n\n"
+            "⏱ Новый цикл анализа — каждые 20 минут.\n"
+            "⚠️ Предупреждение — за 2 минуты "
+            "до расчётного сигнала.\n\n"
+            "Важно: сигнал является аналитическим "
+            "прогнозом и не гарантирует результат сделки."
         ),
         reply_markup=main_keyboard(),
+    )
+
+
+@router.message(
+    lambda message:
+        message.text == "ℹ️ Помощь"
+)
+async def help_handler(
+    message: Message,
+):
+
+    await message.answer(
+        (
+            "ℹ️ <b>Как работает TEYZUS</b>\n\n"
+            "1. Бот анализирует доступные пары.\n"
+            "2. Проверяет несколько таймфреймов.\n"
+            "3. Отбрасывает конфликтующие сигналы.\n"
+            "4. Проверяет Quality Score.\n"
+            "5. Проверяет историческую статистику.\n"
+            "6. Только после этого сигнал может "
+            "быть отправлен пользователям.\n\n"
+            "⏰ В сообщении указывается именно "
+            "время закрытия сделки."
+        )
     )
