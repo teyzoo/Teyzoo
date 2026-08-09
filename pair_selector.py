@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from market import MarketClient
-from quality_filter import (
-    QualityFilter,
-    QualityResult,
-    analyze_timeframe,
-)
 from config import (
     DEFAULT_PAIRS,
     MARKET_CANDLE_LIMIT,
     TIMEFRAMES,
+)
+
+from market import MarketClient
+
+from quality_filter import (
+    QualityFilter,
+    QualityResult,
+    analyze_timeframe,
 )
 
 
@@ -79,12 +81,10 @@ class PairSelector:
         candidates: list[PairAnalysis] = []
 
         for symbol in selected_pairs:
-
             try:
                 analysis = await self.analyze_pair(
                     symbol
                 )
-
             except Exception:
                 continue
 
