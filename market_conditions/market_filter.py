@@ -1,42 +1,98 @@
 from __future__ import annotations
-from market import Candle
-from .liquidity import (
-    liquidity_is_acceptable,
+
+from dataclasses import dataclass
+
+from market_conditions.liquidity import (
+    calculate_liquidity,
 )
-from .session import (
-    is_market_session_active,
+
+from market_conditions.session import (
+    MarketSession,
 )
-from .trend import (
-    detect_trend,
+
+from market_conditions.trend import (
+    TrendDirection,
 )
-from .volatility import (
-    volatility_is_acceptable,
+
+from market_conditions.volatility import (
+    VolatilityLevel,
 )
-def market_is_tradeable(
-    candles: list[Candle],
-) -> tuple[bool, list[str]]:
+
+
+@dataclass(slots=True)
+class MarketFilterResult:
+    accepted: bool
+
+    reasons: list[str]
+    rejected_reasons: list[str]
+
+
+def evaluate_market_filter(
+    trend: TrendDirection,
+    volatility: VolatilityLevel,
+    liquidity: float,
+    session: MarketSession,
+) -> MarketFilterResult:
+
     reasons: list[str] = []
-    if not is_market_session_active():
-        reasons.append(
-            "Неактивная торговая сессия."
+    rejected: list[str] = []
+
+    if trend == TrendDirection.SIDEWAYS:
+
+        rejected.append(
+            "Рынок находится во флэте."
         )
-    if not volatility_is_acceptable(
-        candles
-    ):
+
+    else:
+
         reasons.append(
-            "Неподходящая волатильность."
+            f"Trend: {trend.value}"
         )
-    if not liquidity_is_acceptable(
-        candles
-    ):
+
+    if volatility == VolatilityLevel.HIGH:
+
+        rejected.append(
+            "Слишком высокая волатильность."
+        )
+
+    elif volatility == VolatilityLevel.NORMAL:
+
         reasons.append(
+            "Нормальная волатильность."
+        )
+
+    else:
+
+        rejected.append(
+            "Слишком низкая волатильность."
+        )
+
+    if liquidity < 20:
+
+        rejected.append(
             "Недостаточная ликвидность."
         )
-    if detect_trend(candles) is None:
+
+    else:
+
         reasons.append(
-            "Не определён устойчивый тренд."
+            f"Liquidity: {liquidity:.1f}"
         )
-    return (
-        len(reasons) == 0,
-        reasons,
+
+    if session == MarketSession.UNKNOWN:
+
+        rejected.append(
+            "Неизвестная рыночная сессия."
+        )
+
+    else:
+
+        reasons.append(
+            f"Session: {session.value}"
+        )
+
+    return MarketFilterResult(
+        accepted=not rejected,
+        reasons=reasons,
+        rejected_reasons=rejected,
     )
