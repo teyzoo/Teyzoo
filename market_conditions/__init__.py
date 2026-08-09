@@ -2,17 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from indicators import (
-    calculate_indicators,
-)
+from indicators import calculate_indicators
 from market import Candle
 
 
 @dataclass(slots=True)
 class MarketConditionResult:
-    acceptable: bool
-    reasons: list[str]
-    volatility: float | None
+    allowed: bool
+    volatility_ok: bool
+    trend_ok: bool
+    reason: str
 
 
 def evaluate_market_conditions(
@@ -20,100 +19,87 @@ def evaluate_market_conditions(
 ) -> MarketConditionResult:
 
     if len(candles) < 50:
-
         return MarketConditionResult(
-            acceptable=False,
-            reasons=[
+            allowed=False,
+            volatility_ok=False,
+            trend_ok=False,
+            reason=(
                 "Недостаточно свечей "
-                "для оценки условий рынка."
-            ],
-            volatility=None,
+                "для оценки рынка."
+            ),
         )
 
-    indicators = (
-        calculate_indicators(
-            candles
-        )
+    indicators = calculate_indicators(
+        candles
     )
 
-    reasons: list[str] = []
+    closes = [
+        candle.close
+        for candle in candles[-20:]
+    ]
 
-    # Не принимаем экстремально низкую
-    # волатильность.
-    if (
-        indicators.volatility
-        is not None
-        and indicators.volatility < 0.005
-    ):
-
+    if len(closes) < 20:
         return MarketConditionResult(
-            acceptable=False,
-            reasons=[
-                "Слишком низкая волатильность."
-            ],
-            volatility=(
-                indicators.volatility
-            ),
+            allowed=False,
+            volatility_ok=False,
+            trend_ok=False,
+            reason="Недостаточно данных.",
         )
 
-    # Не принимаем экстремально высокую
-    # волатильность.
-    if (
-        indicators.volatility
-        is not None
-        and indicators.volatility > 5.0
-    ):
+    highest = max(closes)
+    lowest = min(closes)
 
+    current = closes[-1]
+
+    if current <= 0:
         return MarketConditionResult(
-            acceptable=False,
-            reasons=[
-                "Слишком высокая волатильность."
-            ],
-            volatility=(
-                indicators.volatility
-            ),
+            allowed=False,
+            volatility_ok=False,
+            trend_ok=False,
+            reason="Некорректная цена.",
         )
 
-    if indicators.volatility is not None:
+    volatility = (
+        highest - lowest
+    ) / current * 100
 
-        reasons.append(
-            "Волатильность находится "
-            "в допустимом диапазоне."
-        )
+    volatility_ok = (
+        0.01
+        <= volatility
+        <= 2.0
+    )
 
-    if (
+    trend_ok = (
         indicators.ema_fast is not None
         and indicators.ema_slow is not None
-    ):
+    )
 
-        distance = abs(
-            indicators.ema_fast
-            - indicators.ema_slow
+    if not volatility_ok:
+        return MarketConditionResult(
+            allowed=False,
+            volatility_ok=False,
+            trend_ok=trend_ok,
+            reason=(
+                "Волатильность рынка "
+                "вне допустимого диапазона."
+            ),
         )
 
-        if distance == 0:
-
-            return MarketConditionResult(
-                acceptable=False,
-                reasons=[
-                    "EMA практически совпадают."
-                ],
-                volatility=(
-                    indicators.volatility
-                ),
-            )
-
-        reasons.append(
-            "На рынке присутствует "
-            "выраженное направление."
+    if not trend_ok:
+        return MarketConditionResult(
+            allowed=False,
+            volatility_ok=True,
+            trend_ok=False,
+            reason=(
+                "Не удалось определить тренд."
+            ),
         )
 
     return MarketConditionResult(
-        acceptable=True,
-        reasons=reasons,
-        volatility=(
-            indicators.volatility
-        ),
+        allowed=True,
+        volatility_ok=True,
+        trend_ok=True,
+        reason="Рыночные условия подходят.",
     )
 
 
