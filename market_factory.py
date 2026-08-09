@@ -10,6 +10,7 @@ from config import (
 from market import (
     HTTPMarketProvider,
     MarketClient,
+    MarketProvider,
 )
 
 
@@ -18,15 +19,14 @@ logger = logging.getLogger(
 )
 
 
-def create_market_provider():
+def create_market_provider() -> MarketProvider:
     """
-    Создаёт HTTP-провайдер рынка.
+    Создаёт HTTP-провайдер рыночных данных.
 
     Все настройки берутся из config.py.
     """
 
     if not MARKET_API_URL:
-
         raise RuntimeError(
             "MARKET_API_URL не задан."
         )
@@ -44,15 +44,13 @@ def create_market_provider():
 
 def create_market_client() -> MarketClient:
     """
-    Создаёт полноценный MarketClient.
+    Создаёт MarketClient с HTTP-провайдером.
     """
 
-    provider = (
-        create_market_provider()
-    )
+    provider = create_market_provider()
 
     client = MarketClient(
-        provider=provider
+        provider=provider,
     )
 
     logger.info(
