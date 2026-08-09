@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from statistics import mean
+from math import sqrt
 
 from market import Candle
 
@@ -17,10 +17,15 @@ class IndicatorSnapshot:
 
     macd: float | None
     macd_signal: float | None
+    macd_histogram: float | None
 
     bollinger_upper: float | None
     bollinger_middle: float | None
     bollinger_lower: float | None
+
+    atr: float | None
+
+    volatility: float | None
 
 
 def _ema(
@@ -31,44 +36,34 @@ def _ema(
     if len(values) < period:
         return None
 
-    multiplier = 2 / (period + 1)
-
-    result = mean(
-        values[:period]
+    multiplier = 2 / (
+        period + 1
     )
 
-    for value in values[period:]:
-        result = (
-            value - result
-        ) * multiplier + result
+    value = sum(
+        values[:period]
+    ) / period
 
-    return result
+    for price in values[period:]:
+        value = (
+            price - value
+        ) * multiplier + value
+
+    return value
 
 
-def _ema_series(
+def _sma(
     values: list[float],
     period: int,
-) -> list[float]:
+) -> float | None:
 
     if len(values) < period:
-        return []
+        return None
 
-    multiplier = 2 / (period + 1)
-
-    current = mean(
-        values[:period]
+    return (
+        sum(values[-period:])
+        / period
     )
-
-    result = [current]
-
-    for value in values[period:]:
-        current = (
-            value - current
-        ) * multiplier + current
-
-        result.append(current)
-
-    return result
 
 
 def _rsi(
@@ -95,17 +90,23 @@ def _rsi(
         if change > 0:
             gains.append(change)
             losses.append(0.0)
-
         else:
             gains.append(0.0)
-            losses.append(abs(change))
+            losses.append(
+                abs(change)
+            )
 
-    avg_gain = mean(
-        gains[:period]
+    if len(gains) < period:
+        return None
+
+    average_gain = (
+        sum(gains[:period])
+        / period
     )
 
-    avg_loss = mean(
-        losses[:period]
+    average_loss = (
+        sum(losses[:period])
+        / period
     )
 
     for index in range(
@@ -113,27 +114,28 @@ def _rsi(
         len(gains),
     ):
 
-        avg_gain = (
+        average_gain = (
             (
-                avg_gain
+                average_gain
                 * (period - 1)
             )
             + gains[index]
         ) / period
 
-        avg_loss = (
+        average_loss = (
             (
-                avg_loss
+                average_loss
                 * (period - 1)
             )
             + losses[index]
         ) / period
 
-    if avg_loss == 0:
+    if average_loss == 0:
         return 100.0
 
     relative_strength = (
-        avg_gain / avg_loss
+        average_gain
+        / average_loss
     )
 
     return (
@@ -145,63 +147,6 @@ def _rsi(
                 + relative_strength
             )
         )
-    )
-
-
-def _macd(
-    values: list[float],
-) -> tuple[
-    float | None,
-    float | None,
-]:
-
-    fast = _ema_series(
-        values,
-        12,
-    )
-
-    slow = _ema_series(
-        values,
-        26,
-    )
-
-    if not fast or not slow:
-        return None, None
-
-    offset = 26 - 12
-
-    macd_values: list[float] = []
-
-    for index, slow_value in enumerate(slow):
-
-        fast_index = (
-            index + offset
-        )
-
-        if fast_index >= len(fast):
-            break
-
-        macd_values.append(
-            fast[fast_index]
-            - slow_value
-        )
-
-    if not macd_values:
-        return None, None
-
-    macd_value = macd_values[-1]
-
-    signal_series = _ema_series(
-        macd_values,
-        9,
-    )
-
-    if not signal_series:
-        return macd_value, None
-
-    return (
-        macd_value,
-        signal_series[-1],
     )
 
 
@@ -220,17 +165,23 @@ def _bollinger(
 
     window = values[-period:]
 
-    middle = mean(window)
-
-    variance = mean(
-        (
-            value - middle
-        ) ** 2
-        for value in window
+    middle = (
+        sum(window)
+        / period
     )
 
-    standard_deviation = (
-        variance ** 0.5
+    variance = (
+        sum(
+            (
+                value - middle
+            ) ** 2
+            for value in window
+        )
+        / period
+    )
+
+    standard_deviation = sqrt(
+        variance
     )
 
     upper = (
@@ -252,14 +203,94 @@ def _bollinger(
     )
 
 
+def _atr(
+    candles: list[Candle],
+    period: int = 14,
+) -> float | None:
+
+    if len(candles) <= period:
+        return None
+
+    true_ranges: list[float] = []
+
+    for index in range(
+        1,
+        len(candles),
+    ):
+
+        current = candles[index]
+        previous = candles[
+            index - 1
+        ]
+
+        tr = max(
+            current.high
+            - current.low,
+            abs(
+                current.high
+                - previous.close
+            ),
+            abs(
+                current.low
+                - previous.close
+            ),
+        )
+
+        true_ranges.append(tr)
+
+    if len(true_ranges) < period:
+        return None
+
+    return (
+        sum(
+            true_ranges[-period:]
+        )
+        / period
+    )
+
+
+def _volatility(
+    values: list[float],
+    period: int = 20,
+) -> float | None:
+
+    if len(values) < period:
+        return None
+
+    window = values[-period:]
+
+    mean = (
+        sum(window)
+        / len(window)
+    )
+
+    if mean == 0:
+        return None
+
+    variance = (
+        sum(
+            (
+                value - mean
+            ) ** 2
+            for value in window
+        )
+        / len(window)
+    )
+
+    return (
+        sqrt(variance)
+        / abs(mean)
+        * 100
+    )
+
+
 def calculate_indicators(
     candles: list[Candle],
 ) -> IndicatorSnapshot:
 
     if not candles:
         raise ValueError(
-            "Для расчёта индикаторов "
-            "нужны свечи."
+            "Нет свечей."
         )
 
     closes = [
@@ -284,9 +315,64 @@ def calculate_indicators(
         14,
     )
 
-    macd, macd_signal = _macd(
-        closes
+    macd_fast = _ema(
+        closes,
+        12,
     )
+
+    macd_slow = _ema(
+        closes,
+        26,
+    )
+
+    macd = None
+    macd_signal = None
+    macd_histogram = None
+
+    if (
+        macd_fast is not None
+        and macd_slow is not None
+    ):
+
+        macd_values: list[float] = []
+
+        for index in range(
+            25,
+            len(closes),
+        ):
+
+            fast = _ema(
+                closes[: index + 1],
+                12,
+            )
+
+            slow = _ema(
+                closes[: index + 1],
+                26,
+            )
+
+            if (
+                fast is not None
+                and slow is not None
+            ):
+                macd_values.append(
+                    fast - slow
+                )
+
+        if macd_values:
+
+            macd = macd_values[-1]
+
+            macd_signal = _ema(
+                macd_values,
+                9,
+            )
+
+            if macd_signal is not None:
+                macd_histogram = (
+                    macd
+                    - macd_signal
+                )
 
     (
         bollinger_upper,
@@ -298,6 +384,16 @@ def calculate_indicators(
         2.0,
     )
 
+    atr = _atr(
+        candles,
+        14,
+    )
+
+    volatility = _volatility(
+        closes,
+        20,
+    )
+
     return IndicatorSnapshot(
         price=price,
         ema_fast=ema_fast,
@@ -305,8 +401,16 @@ def calculate_indicators(
         rsi=rsi,
         macd=macd,
         macd_signal=macd_signal,
-        bollinger_upper=bollinger_upper,
-        bollinger_middle=bollinger_middle,
-        bollinger_lower=bollinger_lower,
+        macd_histogram=macd_histogram,
+        bollinger_upper=(
+            bollinger_upper
+        ),
+        bollinger_middle=(
+            bollinger_middle
+        ),
+        bollinger_lower=(
+            bollinger_lower
+        ),
+        atr=atr,
+        volatility=volatility,
     )
-    
