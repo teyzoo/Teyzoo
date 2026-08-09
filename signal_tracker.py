@@ -1,18 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
 
-from aiogram import Bot
-
+from market import MarketClient
 from models import Direction
-from signal_results import (
-    SignalCheckResult,
-    check_signal_result,
-)
-from time_utils import MOSCOW
 
 
 logger = logging.getLogger(
@@ -23,139 +16,75 @@ logger = logging.getLogger(
 @dataclass(slots=True)
 class TrackedSignal:
     signal_id: int
-
     symbol: str
-
     direction: Direction
-
     entry_price: float
-
-    close_time: datetime
-
-    warning_sent: bool = False
+    expiry_time: datetime
 
 
 class SignalTracker:
 
-    def __init__(self):
+    def __init__(
+        self,
+        market: MarketClient,
+    ):
 
-        self._signals: dict[
-            int,
-            TrackedSignal,
-        ] = {}
+        self.market = market
 
-        self._lock = asyncio.Lock()
+    async def get_current_price(
+        self,
+        symbol: str,
+    ) -> float:
 
-    async def add(
+        candles = await self.market.get_candles(
+            symbol=symbol,
+            timeframe="1m",
+            limit=20,
+        )
+
+        if not candles:
+            raise RuntimeError(
+                "No market candles."
+            )
+
+        return candles[-1].close
+
+    @staticmethod
+    def calculate_result(
+        direction: Direction,
+        entry_price: float,
+        exit_price: float,
+    ) -> bool:
+
+        if direction == Direction.UP:
+            return exit_price > entry_price
+
+        if direction == Direction.DOWN:
+            return exit_price < entry_price
+
+        return False
+
+    async def check_signal(
         self,
         signal: TrackedSignal,
-    ):
+    ) -> bool:
 
-        async with self._lock:
-
-            self._signals[
-                signal.signal_id
-            ] = signal
-
-            logger.info(
-                "Tracking signal #%s",
-                signal.signal_id,
+        exit_price = (
+            await self.get_current_price(
+                signal.symbol
             )
-
-    async def remove(
-        self,
-        signal_id: int,
-    ):
-
-        async with self._lock:
-
-            self._signals.pop(
-                signal_id,
-                None,
-            )
-
-    async def get_all(
-        self,
-    ) -> list[TrackedSignal]:
-
-        async with self._lock:
-
-            return list(
-                self._signals.values()
-            )
-
-    async def mark_warning_sent(
-        self,
-        signal_id: int,
-    ):
-
-        async with self._lock:
-
-            signal = self._signals.get(
-                signal_id
-            )
-
-            if signal is not None:
-                signal.warning_sent = True
-
-    async def get_due_warnings(
-        self,
-        now: datetime,
-    ) -> list[TrackedSignal]:
-
-        now = now.astimezone(
-            MOSCOW
         )
 
-        result = []
-
-        async with self._lock:
-
-            for signal in self._signals.values():
-
-                if signal.warning_sent:
-                    continue
-
-                seconds = (
-                    signal.close_time
-                    - now
-                ).total_seconds()
-
-                if (
-                    0
-                    < seconds
-                    <= 120
-                ):
-                    result.append(
-                        signal
-                    )
-
-        return result
-
-    async def get_due_closures(
-        self,
-        now: datetime,
-    ) -> list[TrackedSignal]:
-
-        now = now.astimezone(
-            MOSCOW
+        won = self.calculate_result(
+            direction=signal.direction,
+            entry_price=signal.entry_price,
+            exit_price=exit_price,
         )
 
-        result = []
+        logger.info(
+            "Signal #%s result: %s",
+            signal.signal_id,
+            "WON" if won else "LOST",
+        )
 
-        async with self._lock:
-
-            for signal in self._signals.values():
-
-                if (
-                    signal.close_time
-                    <= now
-                ):
-                    result.append(
-                        signal
-                    )
-
-        return result
-
-
-signal_tracker = SignalTracker()
+        return won
