@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from config import (
     SIGNAL_MINIMUM_PROBABILITY,
     SIGNAL_MINIMUM_QUALITY,
+    SIGNAL_REQUIRE_HISTORICAL_PROBABILITY,
 )
 
 from probability import (
@@ -16,11 +17,9 @@ from probability import (
 @dataclass(slots=True)
 class SignalPolicyResult:
     allowed: bool
-
     reason: str
 
     quality_score: float
-
     historical_probability: float | None
 
 
@@ -29,22 +28,17 @@ class SignalPolicy:
     def __init__(
         self,
         calibrator: ProbabilityCalibrator,
-        minimum_quality: float = (
-            SIGNAL_MINIMUM_QUALITY
-        ),
-        minimum_probability: float = (
-            SIGNAL_MINIMUM_PROBABILITY
+        minimum_quality: float = SIGNAL_MINIMUM_QUALITY,
+        minimum_probability: float = SIGNAL_MINIMUM_PROBABILITY,
+        require_historical_probability: bool = (
+            SIGNAL_REQUIRE_HISTORICAL_PROBABILITY
         ),
     ):
-
         self.calibrator = calibrator
-
-        self.minimum_quality = (
-            minimum_quality
-        )
-
-        self.minimum_probability = (
-            minimum_probability
+        self.minimum_quality = minimum_quality
+        self.minimum_probability = minimum_probability
+        self.require_historical_probability = (
+            require_historical_probability
         )
 
     def evaluate(
@@ -52,17 +46,12 @@ class SignalPolicy:
         quality_score: float,
     ) -> SignalPolicyResult:
 
-        if quality_score < 0:
-            quality_score = 0.0
+        quality_score = max(
+            0.0,
+            min(100.0, quality_score),
+        )
 
-        if quality_score > 100:
-            quality_score = 100.0
-
-        if (
-            quality_score
-            < self.minimum_quality
-        ):
-
+        if quality_score < self.minimum_quality:
             return SignalPolicyResult(
                 allowed=False,
                 reason=(
@@ -81,22 +70,29 @@ class SignalPolicy:
 
         if probability is None:
 
+            if self.require_historical_probability:
+                return SignalPolicyResult(
+                    allowed=False,
+                    reason=(
+                        "Недостаточно исторических "
+                        "данных."
+                    ),
+                    quality_score=quality_score,
+                    historical_probability=None,
+                )
+
             return SignalPolicyResult(
-                allowed=False,
+                allowed=True,
                 reason=(
-                    "Недостаточно исторических "
-                    "данных для подтверждения "
-                    "вероятности."
+                    "Signal passed by Quality Score. "
+                    "Historical probability is not "
+                    "available yet."
                 ),
                 quality_score=quality_score,
                 historical_probability=None,
             )
 
-        if (
-            probability
-            < self.minimum_probability
-        ):
-
+        if probability < self.minimum_probability:
             return SignalPolicyResult(
                 allowed=False,
                 reason=(
