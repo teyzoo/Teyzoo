@@ -32,7 +32,7 @@ def get_int_env(
     )
     try:
         return int(value or default)
-    except (TypeError, ValueError) as exc:
+    except ValueError as exc:
         raise RuntimeError(
             f"Environment variable {name} must be an integer."
         ) from exc
@@ -46,10 +46,41 @@ def get_float_env(
     )
     try:
         return float(value or default)
-    except (TypeError, ValueError) as exc:
+    except ValueError as exc:
         raise RuntimeError(
             f"Environment variable {name} must be a number."
         ) from exc
+def get_bool_env(
+    name: str,
+    default: bool,
+) -> bool:
+    value = get_env(
+        name,
+        None,
+    )
+    if value is None:
+        return default
+    value = value.lower().strip()
+    if value in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "y",
+    }:
+        return True
+    if value in {
+        "0",
+        "false",
+        "no",
+        "off",
+        "n",
+    }:
+        return False
+    raise RuntimeError(
+        f"Environment variable {name} must be "
+        f"a boolean: true/false."
+    )
 # =========================================================
 # TELEGRAM
 # =========================================================
@@ -78,7 +109,7 @@ ADMIN_IDS_RAW: Final[str] = (
 )
 def get_admin_ids() -> set[int]:
     result: set[int] = set()
-    # Владелец автоматически является администратором.
+    # OWNER автоматически считается администратором.
     if OWNER_ID > 0:
         result.add(OWNER_ID)
     for value in ADMIN_IDS_RAW.split(","):
@@ -125,14 +156,10 @@ MARKET_API_URL: Final[str] = get_required_env(
 MARKET_API_KEY: Final[str | None] = get_env(
     "MARKET_API_KEY"
 )
-# Можно НЕ указывать в Render.
-# По умолчанию: 15 секунд.
 MARKET_REQUEST_TIMEOUT: Final[int] = get_int_env(
     "MARKET_REQUEST_TIMEOUT",
     15,
 )
-# Можно НЕ указывать в Render.
-# По умолчанию: 200 свечей.
 MARKET_CANDLE_LIMIT: Final[int] = get_int_env(
     "MARKET_CANDLE_LIMIT",
     200,
@@ -140,32 +167,59 @@ MARKET_CANDLE_LIMIT: Final[int] = get_int_env(
 # =========================================================
 # SIGNAL SETTINGS
 # =========================================================
-# Можно НЕ указывать в Render.
-# По умолчанию минимальное качество = 85%.
+# Минимальное качество сигнала.
+#
+# Можно НЕ указывать SIGNAL_MINIMUM_QUALITY
+# в Render. В таком случае используется 85%.
 SIGNAL_MINIMUM_QUALITY: Final[float] = (
     get_float_env(
         "SIGNAL_MINIMUM_QUALITY",
         85.0,
     )
 )
-# Можно НЕ указывать в Render.
-# По умолчанию минимальная историческая вероятность = 70%.
+# Минимальная историческая вероятность.
+#
+# Можно НЕ указывать SIGNAL_MINIMUM_PROBABILITY
+# в Render. В таком случае используется 70%.
 SIGNAL_MINIMUM_PROBABILITY: Final[float] = (
     get_float_env(
         "SIGNAL_MINIMUM_PROBABILITY",
         70.0,
     )
 )
-# Можно НЕ указывать в Render.
-# По умолчанию предупреждение за 2 минуты.
+# =========================================================
+# SIGNAL POLICY COMPATIBILITY
+# =========================================================
+#
+# Этот параметр требуется signal_policy.py.
+#
+# Его НЕ обязательно добавлять в Render.
+#
+# По умолчанию историческая вероятность учитывается
+# при фильтрации сигнала.
+#
+# Если в будущем понадобится отключить этот фильтр,
+# можно добавить в Render:
+#
+# SIGNAL_REQUIRE_HISTORICAL_PROBABILITY=false
+#
+# Но сейчас этого делать не нужно.
+#
+SIGNAL_REQUIRE_HISTORICAL_PROBABILITY: Final[bool] = (
+    get_bool_env(
+        "SIGNAL_REQUIRE_HISTORICAL_PROBABILITY",
+        True,
+    )
+)
+# =========================================================
+# SIGNAL TIMING
+# =========================================================
 SIGNAL_WARNING_MINUTES: Final[int] = (
     get_int_env(
         "SIGNAL_WARNING_MINUTES",
         2,
     )
 )
-# Можно НЕ указывать в Render.
-# По умолчанию сигнал действует 20 минут.
 SIGNAL_EXPIRY_MINUTES: Final[int] = (
     get_int_env(
         "SIGNAL_EXPIRY_MINUTES",
@@ -175,24 +229,18 @@ SIGNAL_EXPIRY_MINUTES: Final[int] = (
 # =========================================================
 # SCHEDULER
 # =========================================================
-# Анализ рынка каждые 20 секунд.
-# Можно НЕ указывать в Render.
 SIGNAL_ANALYSIS_INTERVAL: Final[int] = (
     get_int_env(
         "SIGNAL_ANALYSIS_INTERVAL",
         20,
     )
 )
-# Проверка предупреждений каждые 15 секунд.
-# Можно НЕ указывать в Render.
 SIGNAL_WARNING_INTERVAL: Final[int] = (
     get_int_env(
         "SIGNAL_WARNING_INTERVAL",
         15,
     )
 )
-# Проверка результатов каждые 30 секунд.
-# Можно НЕ указывать в Render.
 SIGNAL_RESULT_INTERVAL: Final[int] = (
     get_int_env(
         "SIGNAL_RESULT_INTERVAL",
@@ -245,62 +293,39 @@ LOG_LEVEL: Final[str] = (
 # VALIDATION
 # =========================================================
 def validate_config() -> None:
-    # -----------------------------------------------------
-    # Telegram
-    # -----------------------------------------------------
     if not BOT_TOKEN:
         raise RuntimeError(
             "BOT_TOKEN is not configured."
         )
-    # -----------------------------------------------------
-    # Database
-    # -----------------------------------------------------
     if not DATABASE_URL:
         raise RuntimeError(
             "DATABASE_URL is not configured."
         )
-    # -----------------------------------------------------
-    # Market API
-    # -----------------------------------------------------
     if not MARKET_API_URL:
         raise RuntimeError(
             "MARKET_API_URL is not configured."
         )
-    # -----------------------------------------------------
-    # Owner
-    # -----------------------------------------------------
     if OWNER_ID <= 0:
         raise RuntimeError(
             "OWNER_ID must be configured "
             "with a valid Telegram user ID."
         )
-    # -----------------------------------------------------
-    # FastAPI / Render
-    # -----------------------------------------------------
     if PORT <= 0 or PORT > 65535:
         raise RuntimeError(
             "PORT must be between 1 and 65535."
         )
-    # -----------------------------------------------------
-    # Market settings
-    # -----------------------------------------------------
     if MARKET_REQUEST_TIMEOUT <= 0:
         raise RuntimeError(
-            "MARKET_REQUEST_TIMEOUT must be "
-            "greater than 0."
+            "MARKET_REQUEST_TIMEOUT must be greater than 0."
         )
     if MARKET_CANDLE_LIMIT < 20:
         raise RuntimeError(
-            "MARKET_CANDLE_LIMIT must be "
-            "at least 20."
+            "MARKET_CANDLE_LIMIT must be at least 20."
         )
     if MARKET_CANDLE_LIMIT > 5000:
         raise RuntimeError(
             "MARKET_CANDLE_LIMIT cannot exceed 5000."
         )
-    # -----------------------------------------------------
-    # Signal quality
-    # -----------------------------------------------------
     if not (
         0 <= SIGNAL_MINIMUM_QUALITY <= 100
     ):
@@ -308,9 +333,6 @@ def validate_config() -> None:
             "SIGNAL_MINIMUM_QUALITY must be "
             "between 0 and 100."
         )
-    # -----------------------------------------------------
-    # Historical probability
-    # -----------------------------------------------------
     if not (
         0 <= SIGNAL_MINIMUM_PROBABILITY <= 100
     ):
@@ -318,47 +340,29 @@ def validate_config() -> None:
             "SIGNAL_MINIMUM_PROBABILITY must be "
             "between 0 and 100."
         )
-    # -----------------------------------------------------
-    # Warning
-    # -----------------------------------------------------
     if SIGNAL_WARNING_MINUTES < 0:
         raise RuntimeError(
-            "SIGNAL_WARNING_MINUTES cannot "
-            "be negative."
+            "SIGNAL_WARNING_MINUTES cannot be negative."
         )
-    # -----------------------------------------------------
-    # Expiry
-    # -----------------------------------------------------
     if SIGNAL_EXPIRY_MINUTES <= 0:
         raise RuntimeError(
-            "SIGNAL_EXPIRY_MINUTES must be "
-            "greater than 0."
+            "SIGNAL_EXPIRY_MINUTES must be greater than 0."
         )
-    # -----------------------------------------------------
-    # Scheduler
-    # -----------------------------------------------------
     if SIGNAL_ANALYSIS_INTERVAL <= 0:
         raise RuntimeError(
-            "SIGNAL_ANALYSIS_INTERVAL must be "
-            "greater than 0."
+            "SIGNAL_ANALYSIS_INTERVAL must be greater than 0."
         )
     if SIGNAL_WARNING_INTERVAL <= 0:
         raise RuntimeError(
-            "SIGNAL_WARNING_INTERVAL must be "
-            "greater than 0."
+            "SIGNAL_WARNING_INTERVAL must be greater than 0."
         )
     if SIGNAL_RESULT_INTERVAL <= 0:
         raise RuntimeError(
-            "SIGNAL_RESULT_INTERVAL must be "
-            "greater than 0."
+            "SIGNAL_RESULT_INTERVAL must be greater than 0."
         )
-    # -----------------------------------------------------
-    # Applications
-    # -----------------------------------------------------
     if APPLICATION_MAX_LENGTH <= 0:
         raise RuntimeError(
-            "APPLICATION_MAX_LENGTH must be "
-            "greater than 0."
+            "APPLICATION_MAX_LENGTH must be greater than 0."
         )
 # =========================================================
 # STARTUP VALIDATION
