@@ -4,7 +4,6 @@ from config import (
     MARKET_API_KEY,
     MARKET_API_URL,
 )
-
 from market import (
     HTTPMarketProvider,
     MarketClient,
@@ -12,20 +11,23 @@ from market import (
 
 
 def create_market_client() -> MarketClient:
+
     if not MARKET_API_URL:
+
         raise RuntimeError(
-            "MARKET_API_URL не установлен."
+            "MARKET_API_URL не установлен. "
+            "Нельзя запускать сигналы без "
+            "реального источника рыночных данных."
         )
 
     provider = HTTPMarketProvider(
         base_url=MARKET_API_URL,
         api_key=(
             MARKET_API_KEY
-            if MARKET_API_KEY
-            else None
+            or None
         ),
     )
 
     return MarketClient(
-        provider=provider,
+        provider=provider
     )
