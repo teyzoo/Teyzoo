@@ -2,33 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from indicators import (
-    calculate_indicators,
-)
-
+from indicators import calculate_indicators
 from market import Candle
-
 from models import Direction
 
-
-# ============================================================
-# НАСТРОЙКИ
-# ============================================================
-
-MIN_CANDLES = 100
-
-MIN_TIMEFRAME_SCORE = 80.0
-
-MIN_TIMEFRAME_CONFIRMATIONS = 3
-
-MIN_TIMEFRAME_AGREEMENT = 0.75
-
-MIN_QUALITY_SCORE = 85.0
-
-
-# ============================================================
-# TIMEFRAME ANALYSIS
-# ============================================================
 
 @dataclass(slots=True)
 class TimeframeAnalysis:
@@ -41,18 +18,6 @@ class TimeframeAnalysis:
 
     reasons: list[str]
 
-    confirmations: int = 0
-
-    total_checks: int = 0
-
-    rejected: bool = False
-
-    rejection_reason: str | None = None
-
-
-# ============================================================
-# QUALITY RESULT
-# ============================================================
 
 @dataclass(slots=True)
 class QualityResult:
@@ -76,20 +41,12 @@ class QualityResult:
     ]
 
 
-# ============================================================
-# ANALYZE TIMEFRAME
-# ============================================================
-
 def analyze_timeframe(
     timeframe: str,
     candles: list[Candle],
 ) -> TimeframeAnalysis:
 
-    # --------------------------------------------------------
-    # Проверка данных
-    # --------------------------------------------------------
-
-    if len(candles) < MIN_CANDLES:
+    if len(candles) < 50:
 
         return TimeframeAnalysis(
             timeframe=timeframe,
@@ -98,59 +55,25 @@ def analyze_timeframe(
             reasons=[
                 "Недостаточно свечей."
             ],
-            confirmations=0,
-            total_checks=0,
-            rejected=True,
-            rejection_reason=(
-                "Недостаточно свечей."
-            ),
         )
 
-    # --------------------------------------------------------
-    # Индикаторы
-    # --------------------------------------------------------
-
-    try:
-
-        indicators = (
-            calculate_indicators(
-                candles
-            )
+    indicators = (
+        calculate_indicators(
+            candles
         )
-
-    except Exception as exc:
-
-        return TimeframeAnalysis(
-            timeframe=timeframe,
-            direction=None,
-            score=0.0,
-            reasons=[
-                "Ошибка расчёта индикаторов."
-            ],
-            confirmations=0,
-            total_checks=0,
-            rejected=True,
-            rejection_reason=str(exc),
-        )
+    )
 
     bullish = 0
-
     bearish = 0
-
-    checks = 0
 
     reasons: list[str] = []
 
-    # ========================================================
-    # EMA
-    # ========================================================
-
     if (
-        indicators.ema_fast is not None
-        and indicators.ema_slow is not None
+        indicators.ema_fast
+        is not None
+        and indicators.ema_slow
+        is not None
     ):
-
-        checks += 1
 
         if (
             indicators.ema_fast
@@ -160,7 +83,7 @@ def analyze_timeframe(
             bullish += 1
 
             reasons.append(
-                "EMA подтверждает UP."
+                "EMA bullish"
             )
 
         elif (
@@ -171,25 +94,15 @@ def analyze_timeframe(
             bearish += 1
 
             reasons.append(
-                "EMA подтверждает DOWN."
+                "EMA bearish"
             )
-
-        else:
-
-            reasons.append(
-                "EMA нейтральна."
-            )
-
-    # ========================================================
-    # MACD
-    # ========================================================
 
     if (
-        indicators.macd is not None
-        and indicators.macd_signal is not None
+        indicators.macd
+        is not None
+        and indicators.macd_signal
+        is not None
     ):
-
-        checks += 1
 
         if (
             indicators.macd
@@ -199,7 +112,7 @@ def analyze_timeframe(
             bullish += 1
 
             reasons.append(
-                "MACD подтверждает UP."
+                "MACD bullish"
             )
 
         elif (
@@ -210,270 +123,117 @@ def analyze_timeframe(
             bearish += 1
 
             reasons.append(
-                "MACD подтверждает DOWN."
+                "MACD bearish"
             )
-
-        else:
-
-            reasons.append(
-                "MACD нейтрален."
-            )
-
-    # ========================================================
-    # RSI
-    # ========================================================
 
     if indicators.rsi is not None:
 
-        checks += 1
-
-        rsi = indicators.rsi
-
-        if rsi < 30:
+        if indicators.rsi < 35:
 
             bullish += 1
 
             reasons.append(
-                f"RSI {rsi:.1f}: "
-                "сильная перепроданность."
+                "RSI oversold"
             )
 
-        elif rsi > 70:
+        elif indicators.rsi > 65:
 
             bearish += 1
 
             reasons.append(
-                f"RSI {rsi:.1f}: "
-                "сильная перекупленность."
+                "RSI overbought"
             )
-
-        elif rsi < 40:
-
-            bullish += 1
-
-            reasons.append(
-                f"RSI {rsi:.1f}: "
-                "умеренная перепроданность."
-            )
-
-        elif rsi > 60:
-
-            bearish += 1
-
-            reasons.append(
-                f"RSI {rsi:.1f}: "
-                "умеренная перекупленность."
-            )
-
-        else:
-
-            reasons.append(
-                f"RSI {rsi:.1f}: нейтральный."
-            )
-
-    # ========================================================
-    # BOLLINGER
-    # ========================================================
 
     if (
-        indicators.bollinger_upper is not None
-        and indicators.bollinger_lower is not None
+        indicators.bollinger_upper
+        is not None
+        and indicators.bollinger_lower
+        is not None
     ):
 
-        checks += 1
-
-        price = indicators.price
-
-        upper = (
-            indicators.bollinger_upper
-        )
-
-        lower = (
-            indicators.bollinger_lower
-        )
-
-        if price <= lower:
+        if (
+            indicators.price
+            <= indicators.bollinger_lower
+        ):
 
             bullish += 1
 
             reasons.append(
-                "Цена у нижней полосы Bollinger."
+                "Lower Bollinger"
             )
 
-        elif price >= upper:
+        elif (
+            indicators.price
+            >= indicators.bollinger_upper
+        ):
 
             bearish += 1
 
             reasons.append(
-                "Цена у верхней полосы Bollinger."
+                "Upper Bollinger"
             )
 
-        else:
+    total = (
+        bullish + bearish
+    )
 
-            reasons.append(
-                "Цена внутри Bollinger."
-            )
-
-    # ========================================================
-    # НЕТ ПРОВЕРОК
-    # ========================================================
-
-    if checks == 0:
+    if total == 0:
 
         return TimeframeAnalysis(
             timeframe=timeframe,
             direction=None,
             score=0.0,
             reasons=[
-                *reasons,
-                "Нет доступных проверок."
+                "Нет подтверждений."
             ],
-            confirmations=0,
-            total_checks=0,
-            rejected=True,
-            rejection_reason=(
-                "Нет индикаторов."
-            ),
         )
-
-    # ========================================================
-    # КОНФЛИКТ
-    # ========================================================
-
-    if bullish == bearish:
-
-        return TimeframeAnalysis(
-            timeframe=timeframe,
-            direction=None,
-            score=0.0,
-            reasons=[
-                *reasons,
-                "Индикаторы конфликтуют."
-            ],
-            confirmations=0,
-            total_checks=checks,
-            rejected=True,
-            rejection_reason=(
-                "Конфликт индикаторов."
-            ),
-        )
-
-    # ========================================================
-    # НАПРАВЛЕНИЕ
-    # ========================================================
 
     if bullish > bearish:
 
-        direction = Direction.UP
+        return TimeframeAnalysis(
+            timeframe=timeframe,
+            direction=Direction.UP,
+            score=(
+                bullish
+                / total
+                * 100
+            ),
+            reasons=reasons,
+        )
 
-        confirmations = bullish
-
-    else:
-
-        direction = Direction.DOWN
-
-        confirmations = bearish
-
-    # ========================================================
-    # SCORE
-    # ========================================================
-
-    score = (
-        confirmations
-        / checks
-        * 100.0
-    )
-
-    # ========================================================
-    # МАЛО ПОДТВЕРЖДЕНИЙ
-    # ========================================================
-
-    if (
-        confirmations
-        < MIN_TIMEFRAME_CONFIRMATIONS
-    ):
+    if bearish > bullish:
 
         return TimeframeAnalysis(
             timeframe=timeframe,
-            direction=None,
-            score=score,
-            reasons=[
-                *reasons,
-                (
-                    "Недостаточно "
-                    "подтверждений."
-                ),
-            ],
-            confirmations=confirmations,
-            total_checks=checks,
-            rejected=True,
-            rejection_reason=(
-                "Недостаточно подтверждений."
+            direction=Direction.DOWN,
+            score=(
+                bearish
+                / total
+                * 100
             ),
+            reasons=reasons,
         )
-
-    # ========================================================
-    # НИЗКИЙ SCORE
-    # ========================================================
-
-    if score < MIN_TIMEFRAME_SCORE:
-
-        return TimeframeAnalysis(
-            timeframe=timeframe,
-            direction=None,
-            score=score,
-            reasons=[
-                *reasons,
-                (
-                    "Score ниже минимального "
-                    f"порога "
-                    f"{MIN_TIMEFRAME_SCORE:.0f}%."
-                ),
-            ],
-            confirmations=confirmations,
-            total_checks=checks,
-            rejected=True,
-            rejection_reason=(
-                "Низкий score."
-            ),
-        )
-
-    # ========================================================
-    # ПРОШЁЛ
-    # ========================================================
 
     return TimeframeAnalysis(
         timeframe=timeframe,
-        direction=direction,
-        score=score,
-        reasons=reasons,
-        confirmations=confirmations,
-        total_checks=checks,
-        rejected=False,
-        rejection_reason=None,
+        direction=None,
+        score=0.0,
+        reasons=[
+            "Конфликт индикаторов."
+        ],
     )
 
-
-# ============================================================
-# QUALITY FILTER
-# ============================================================
 
 class QualityFilter:
 
     def __init__(
         self,
-        minimum_quality: float = (
-            MIN_QUALITY_SCORE
-        ),
+        minimum_quality: float = 85.0,
     ):
 
         self.minimum_quality = (
             minimum_quality
         )
-
-    # ========================================================
-    # EVALUATE
-    # ========================================================
 
     def evaluate(
         self,
@@ -482,26 +242,11 @@ class QualityFilter:
         ],
     ) -> QualityResult:
 
-        rejected: list[str] = []
-
-        reasons: list[str] = []
-
-        # ----------------------------------------------------
-        # Только прошедшие TF
-        # ----------------------------------------------------
-
         valid = [
             item
             for item in analyses
-            if (
-                item.direction is not None
-                and not item.rejected
-            )
+            if item.direction is not None
         ]
-
-        # ----------------------------------------------------
-        # Нет валидных TF
-        # ----------------------------------------------------
 
         if not valid:
 
@@ -510,135 +255,83 @@ class QualityFilter:
                 direction=None,
                 quality_score=0.0,
                 confirmations=0,
-                total_checks=len(
-                    analyses
-                ),
+                total_checks=len(analyses),
                 reasons=[],
                 rejected_reasons=[
-                    (
-                        "Нет таймфреймов, "
-                        "прошедших фильтр."
-                    )
+                    "Нет подтверждённых "
+                    "таймфреймов."
                 ],
                 timeframe_results=analyses,
             )
 
-        # ----------------------------------------------------
-        # UP / DOWN
-        # ----------------------------------------------------
-
         up_count = sum(
-            1
+            item.direction
+            == Direction.UP
             for item in valid
-            if (
-                item.direction
-                == Direction.UP
-            )
         )
 
         down_count = sum(
-            1
+            item.direction
+            == Direction.DOWN
             for item in valid
-            if (
-                item.direction
-                == Direction.DOWN
-            )
         )
 
-        # ----------------------------------------------------
-        # Определяем направление
-        # ----------------------------------------------------
+        if up_count == down_count:
+
+            return QualityResult(
+                accepted=False,
+                direction=None,
+                quality_score=0.0,
+                confirmations=0,
+                total_checks=len(valid),
+                reasons=[],
+                rejected_reasons=[
+                    "Нет единого направления."
+                ],
+                timeframe_results=analyses,
+            )
 
         if up_count > down_count:
 
             direction = Direction.UP
-
             confirmations = up_count
-
-        elif down_count > up_count:
-
-            direction = Direction.DOWN
-
-            confirmations = down_count
 
         else:
 
-            return QualityResult(
-                accepted=False,
-                direction=None,
-                quality_score=0.0,
-                confirmations=0,
-                total_checks=len(
-                    valid
-                ),
-                reasons=[],
-                rejected_reasons=[
-                    (
-                        "Таймфреймы "
-                        "разделились поровну."
-                    )
-                ],
-                timeframe_results=analyses,
-            )
+            direction = Direction.DOWN
+            confirmations = down_count
 
-        # ----------------------------------------------------
-        # Согласие таймфреймов
-        # ----------------------------------------------------
+        rejected: list[str] = []
 
-        agreement = (
-            confirmations
-            / len(valid)
-        )
-
-        if (
-            agreement
-            < MIN_TIMEFRAME_AGREEMENT
-        ):
+        if confirmations < 2:
 
             rejected.append(
-                (
-                    "Недостаточное согласие "
-                    "таймфреймов: "
-                    f"{agreement * 100:.1f}%."
-                )
+                "Недостаточно подтверждений "
+                "по таймфреймам."
             )
-
-        # ----------------------------------------------------
-        # Выбираем TF направления
-        # ----------------------------------------------------
 
         selected = [
             item
             for item in valid
-            if (
-                item.direction
-                == direction
-            )
+            if item.direction == direction
         ]
 
         if not selected:
+
+            rejected.append(
+                "Нет подходящего направления."
+            )
 
             return QualityResult(
                 accepted=False,
                 direction=None,
                 quality_score=0.0,
                 confirmations=0,
-                total_checks=len(
-                    valid
-                ),
+                total_checks=len(valid),
                 reasons=[],
-                rejected_reasons=[
-                    (
-                        "Не найдено "
-                        "подходящее направление."
-                    )
-                ],
+                rejected_reasons=rejected,
                 timeframe_results=analyses,
             )
-
-        # ----------------------------------------------------
-        # Средний score
-        # ----------------------------------------------------
 
         average_score = (
             sum(
@@ -648,18 +341,11 @@ class QualityFilter:
             / len(selected)
         )
 
-        # ----------------------------------------------------
-        # Бонус за согласие
-        # ----------------------------------------------------
-
         agreement_bonus = (
-            agreement
-            * 10.0
+            confirmations
+            / len(valid)
+            * 10
         )
-
-        # ----------------------------------------------------
-        # Финальный технический score
-        # ----------------------------------------------------
 
         quality_score = min(
             100.0,
@@ -667,63 +353,23 @@ class QualityFilter:
             + agreement_bonus,
         )
 
-        # ----------------------------------------------------
-        # Причины
-        # ----------------------------------------------------
-
-        for item in selected:
-
-            reasons.extend(
-                item.reasons
-            )
-
-        # ----------------------------------------------------
-        # Проверяем quality
-        # ----------------------------------------------------
-
         if (
             quality_score
             < self.minimum_quality
         ):
 
             rejected.append(
-                (
-                    "Quality Score "
-                    f"{quality_score:.1f}% "
-                    "ниже минимального "
-                    f"порога "
-                    f"{self.minimum_quality:.1f}%."
-                )
+                "Quality Score ниже "
+                f"{self.minimum_quality:.0f}%."
             )
 
-        # ----------------------------------------------------
-        # Конфликт
-        # ----------------------------------------------------
+        reasons: list[str] = []
 
-        conflicting = [
-            item
-            for item in valid
-            if (
-                item.direction
-                != direction
+        for item in selected:
+
+            reasons.extend(
+                item.reasons
             )
-        ]
-
-        if conflicting:
-
-            reasons.append(
-                (
-                    f"⚠️ "
-                    f"{len(conflicting)} "
-                    "таймфрейм(а) "
-                    "не согласны "
-                    "с основным направлением."
-                )
-            )
-
-        # ----------------------------------------------------
-        # Итог
-        # ----------------------------------------------------
 
         accepted = (
             len(rejected) == 0
@@ -744,10 +390,6 @@ class QualityFilter:
             timeframe_results=analyses,
         )
 
-
-# ============================================================
-# SINGLETON
-# ============================================================
 
 quality_filter = QualityFilter(
     minimum_quality=85.0
