@@ -2,20 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from config import (
+    SIGNAL_MINIMUM_PROBABILITY,
+    SIGNAL_MINIMUM_QUALITY,
+)
+
 from probability import (
     ProbabilityCalibrator,
     probability_calibrator,
 )
 
-from config import (
-    MIN_HISTORICAL_PROBABILITY,
-    MIN_SIGNAL_SCORE,
-)
-
 
 @dataclass(slots=True)
 class SignalPolicyResult:
-
     allowed: bool
 
     reason: str
@@ -30,8 +29,12 @@ class SignalPolicy:
     def __init__(
         self,
         calibrator: ProbabilityCalibrator,
-        minimum_quality: float = MIN_SIGNAL_SCORE,
-        minimum_probability: float = MIN_HISTORICAL_PROBABILITY,
+        minimum_quality: float = (
+            SIGNAL_MINIMUM_QUALITY
+        ),
+        minimum_probability: float = (
+            SIGNAL_MINIMUM_PROBABILITY
+        ),
     ):
 
         self.calibrator = calibrator
@@ -49,13 +52,22 @@ class SignalPolicy:
         quality_score: float,
     ) -> SignalPolicyResult:
 
-        if quality_score < self.minimum_quality:
+        if quality_score < 0:
+            quality_score = 0.0
+
+        if quality_score > 100:
+            quality_score = 100.0
+
+        if (
+            quality_score
+            < self.minimum_quality
+        ):
 
             return SignalPolicyResult(
                 allowed=False,
                 reason=(
                     "Quality Score ниже "
-                    f"{self.minimum_quality:.1f}%."
+                    "минимального порога."
                 ),
                 quality_score=quality_score,
                 historical_probability=None,
@@ -73,14 +85,17 @@ class SignalPolicy:
                 allowed=False,
                 reason=(
                     "Недостаточно исторических "
-                    "данных для достоверной "
-                    "оценки вероятности."
+                    "данных для подтверждения "
+                    "вероятности."
                 ),
                 quality_score=quality_score,
                 historical_probability=None,
             )
 
-        if probability < self.minimum_probability:
+        if (
+            probability
+            < self.minimum_probability
+        ):
 
             return SignalPolicyResult(
                 allowed=False,
@@ -101,5 +116,5 @@ class SignalPolicy:
 
 
 signal_policy = SignalPolicy(
-    calibrator=probability_calibrator,
+    calibrator=probability_calibrator
 )
