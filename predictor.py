@@ -26,13 +26,10 @@ class Predictor:
     ) -> Prediction:
 
         result: AnalysisResult = (
-            signal_engine.analyze(
-                candles
-            )
+            signal_engine.analyze(candles)
         )
 
         if result.direction is None:
-
             return Prediction(
                 direction=None,
                 score=0.0,
@@ -40,10 +37,10 @@ class Predictor:
                 reasons=result.reasons,
             )
 
-        confidence = min(
-            100.0,
-            max(
-                0.0,
+        confidence = max(
+            0.0,
+            min(
+                100.0,
                 result.score,
             ),
         )
