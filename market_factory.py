@@ -1,17 +1,29 @@
 from __future__ import annotations
 
-from market import (
-    HTTPMarketProvider,
-    MarketClient,
-)
+import logging
 
 from config import (
     MARKET_API_KEY,
     MARKET_API_URL,
 )
 
+from market import (
+    HTTPMarketProvider,
+    MarketClient,
+)
 
-def create_market_client() -> MarketClient:
+
+logger = logging.getLogger(
+    "market_factory"
+)
+
+
+def create_market_provider():
+    """
+    Создаёт HTTP-провайдер рынка.
+
+    Все настройки берутся из config.py.
+    """
 
     if not MARKET_API_URL:
 
@@ -19,11 +31,32 @@ def create_market_client() -> MarketClient:
             "MARKET_API_URL не задан."
         )
 
-    provider = HTTPMarketProvider(
+    logger.info(
+        "Creating HTTP market provider: %s",
+        MARKET_API_URL,
+    )
+
+    return HTTPMarketProvider(
         base_url=MARKET_API_URL,
         api_key=MARKET_API_KEY,
     )
 
-    return MarketClient(
+
+def create_market_client() -> MarketClient:
+    """
+    Создаёт полноценный MarketClient.
+    """
+
+    provider = (
+        create_market_provider()
+    )
+
+    client = MarketClient(
         provider=provider
     )
+
+    logger.info(
+        "Market client created."
+    )
+
+    return client
