@@ -2,102 +2,47 @@ from __future__ import annotations
 
 from aiogram import Router
 from aiogram.filters import CommandStart
-from aiogram.types import (
-    KeyboardButton,
-    Message,
-    ReplyKeyboardMarkup,
-)
+from aiogram.types import Message
 
 from database import register_user
 
 
-router = Router(
-    name="start"
-)
+router = Router()
 
 
-def main_keyboard() -> ReplyKeyboardMarkup:
-
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(
-                    text="📊 Сигналы"
-                ),
-            ],
-            [
-                KeyboardButton(
-                    text="📝 Оставить заявку"
-                ),
-            ],
-            [
-                KeyboardButton(
-                    text="ℹ️ Информация"
-                ),
-            ],
-        ],
-        resize_keyboard=True,
-    )
-
-
-@router.message(
-    CommandStart()
-)
+@router.message(CommandStart())
 async def start_handler(
     message: Message,
 ):
 
-    if message.from_user is None:
+    user = message.from_user
+
+    if user is None:
         return
 
     await register_user(
-        telegram_id=message.from_user.id,
-        username=(
-            message.from_user.username
-        ),
-        first_name=(
-            message.from_user.first_name
-        ),
+        telegram_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
     )
 
     text = (
-        "👋 <b>Добро пожаловать в TEYZUS</b>\n\n"
+        "🚀 <b>TEYZUS SIGNAL</b>\n\n"
+
         "Бот анализирует рыночные данные "
-        "и публикует только сигналы, "
-        "которые проходят заданные фильтры.\n\n"
-        "⏱ Новый цикл анализа — каждые 20 минут.\n"
-        "⚠️ За 2 минуты до сигнала бот "
-        "отправляет предупреждение.\n\n"
-        "Важно: прогноз не является "
-        "гарантией прибыли."
+        "и выдаёт только сигналы, "
+        "прошедшие установленные фильтры.\n\n"
+
+        "⏰ Новая проверка — каждые 20 минут.\n"
+        "🔔 Предупреждение — за 2 минуты "
+        "до расчётного времени сигнала.\n"
+        "📊 Результаты автоматически "
+        "фиксируются в статистике.\n\n"
+
+        "Команды:\n"
+        "/stats — статистика сигналов"
     )
 
     await message.answer(
-        text,
-        reply_markup=main_keyboard(),
-    )
-
-
-@router.message(
-    lambda message:
-    message.text == "ℹ️ Информация"
-)
-async def information_handler(
-    message: Message,
-):
-
-    await message.answer(
-        "ℹ️ <b>О TEYZUS</b>\n\n"
-        "Бот использует технический анализ "
-        "рыночных данных.\n\n"
-        "Основные проверки:\n"
-        "• EMA\n"
-        "• RSI\n"
-        "• MACD\n"
-        "• Bollinger Bands\n"
-        "• несколько таймфреймов\n\n"
-        "Сигнал может не появиться, если "
-        "рынок не проходит строгую фильтрацию.\n\n"
-        "Это аналитический инструмент, "
-        "а не гарантия результата."
+        text
     )
