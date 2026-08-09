@@ -21,7 +21,9 @@ def get_env(
     return value
 
 
-def get_required_env(name: str) -> str:
+def get_required_env(
+    name: str,
+) -> str:
     value = get_env(name)
 
     if not value:
@@ -32,34 +34,23 @@ def get_required_env(name: str) -> str:
     return value
 
 
+# ---------------------------------------------------------
+# TELEGRAM
+# ---------------------------------------------------------
+
 BOT_TOKEN: Final[str] = get_required_env(
     "BOT_TOKEN"
 )
 
-DATABASE_URL: Final[str] = get_required_env(
-    "DATABASE_URL"
+
+# ---------------------------------------------------------
+# OWNER / ADMINS
+# ---------------------------------------------------------
+
+OWNER_ID: Final[int] = int(
+    get_required_env("OWNER_ID")
 )
 
-MARKET_API_URL: Final[str] = get_required_env(
-    "MARKET_API_URL"
-)
-
-MARKET_API_KEY: Final[str | None] = get_env(
-    "MARKET_API_KEY"
-)
-
-HOST: Final[str] = get_env(
-    "HOST",
-    "0.0.0.0",
-) or "0.0.0.0"
-
-PORT: Final[int] = int(
-    get_env(
-        "PORT",
-        "10000",
-    )
-    or "10000"
-)
 
 ADMIN_IDS_RAW: Final[str] = (
     get_env(
@@ -72,6 +63,9 @@ ADMIN_IDS_RAW: Final[str] = (
 
 def get_admin_ids() -> set[int]:
     result: set[int] = set()
+
+    # Владелец автоматически является администратором.
+    result.add(OWNER_ID)
 
     for value in ADMIN_IDS_RAW.split(","):
         value = value.strip()
@@ -91,6 +85,51 @@ ADMIN_IDS: Final[set[int]] = get_admin_ids()
 
 
 # ---------------------------------------------------------
+# DATABASE
+# ---------------------------------------------------------
+
+DATABASE_URL: Final[str] = get_required_env(
+    "DATABASE_URL"
+)
+
+
+# ---------------------------------------------------------
+# MARKET API
+# ---------------------------------------------------------
+
+MARKET_API_URL: Final[str] = get_required_env(
+    "MARKET_API_URL"
+)
+
+
+MARKET_API_KEY: Final[str | None] = get_env(
+    "MARKET_API_KEY"
+)
+
+
+# ---------------------------------------------------------
+# WEB SERVER
+# ---------------------------------------------------------
+
+HOST: Final[str] = (
+    get_env(
+        "HOST",
+        "0.0.0.0",
+    )
+    or "0.0.0.0"
+)
+
+
+PORT: Final[int] = int(
+    get_env(
+        "PORT",
+        "10000",
+    )
+    or "10000"
+)
+
+
+# ---------------------------------------------------------
 # SIGNAL SETTINGS
 # ---------------------------------------------------------
 
@@ -102,6 +141,7 @@ SIGNAL_MINIMUM_QUALITY: Final[float] = float(
     or "85"
 )
 
+
 SIGNAL_MINIMUM_PROBABILITY: Final[float] = float(
     get_env(
         "SIGNAL_MINIMUM_PROBABILITY",
@@ -110,6 +150,7 @@ SIGNAL_MINIMUM_PROBABILITY: Final[float] = float(
     or "70"
 )
 
+
 SIGNAL_WARNING_MINUTES: Final[int] = int(
     get_env(
         "SIGNAL_WARNING_MINUTES",
@@ -117,6 +158,7 @@ SIGNAL_WARNING_MINUTES: Final[int] = int(
     )
     or "2"
 )
+
 
 SIGNAL_EXPIRY_MINUTES: Final[int] = int(
     get_env(
@@ -138,6 +180,7 @@ MARKET_REQUEST_TIMEOUT: Final[int] = int(
     )
     or "15"
 )
+
 
 MARKET_CANDLE_LIMIT: Final[int] = int(
     get_env(
@@ -177,10 +220,20 @@ DEFAULT_PAIRS: Final[list[str]] = [
 ]
 
 
+# ---------------------------------------------------------
+# CONFIG VALIDATION
+# ---------------------------------------------------------
+
 def validate_config() -> None:
+
     if not BOT_TOKEN:
         raise RuntimeError(
             "BOT_TOKEN is not configured."
+        )
+
+    if OWNER_ID <= 0:
+        raise RuntimeError(
+            "OWNER_ID must be a positive Telegram user ID."
         )
 
     if not DATABASE_URL:
@@ -208,4 +261,34 @@ def validate_config() -> None:
         raise RuntimeError(
             "SIGNAL_MINIMUM_PROBABILITY must be "
             "between 0 and 100."
+        )
+
+    if SIGNAL_WARNING_MINUTES < 0:
+        raise RuntimeError(
+            "SIGNAL_WARNING_MINUTES cannot be negative."
+        )
+
+    if SIGNAL_EXPIRY_MINUTES <= 0:
+        raise RuntimeError(
+            "SIGNAL_EXPIRY_MINUTES must be greater than 0."
+        )
+
+    if MARKET_REQUEST_TIMEOUT <= 0:
+        raise RuntimeError(
+            "MARKET_REQUEST_TIMEOUT must be greater than 0."
+        )
+
+    if MARKET_CANDLE_LIMIT <= 0:
+        raise RuntimeError(
+            "MARKET_CANDLE_LIMIT must be greater than 0."
+        )
+
+    if not TIMEFRAMES:
+        raise RuntimeError(
+            "TIMEFRAMES cannot be empty."
+        )
+
+    if not DEFAULT_PAIRS:
+        raise RuntimeError(
+            "DEFAULT_PAIRS cannot be empty."
         )
