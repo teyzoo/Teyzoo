@@ -2,36 +2,50 @@ from __future__ import annotations
 
 import os
 
-from dotenv import load_dotenv
+
+def _required(name: str) -> str:
+
+    value = os.getenv(name)
+
+    if not value:
+        raise RuntimeError(
+            f"Не задана переменная окружения: {name}"
+        )
+
+    return value
 
 
-load_dotenv()
-
-
-BOT_TOKEN = os.getenv(
-    "BOT_TOKEN",
-    "",
-).strip()
+BOT_TOKEN = _required(
+    "BOT_TOKEN"
+)
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "",
-).strip()
+    "sqlite+aiosqlite:///./teyzus.db",
+)
 
 MARKET_API_URL = os.getenv(
     "MARKET_API_URL",
     "",
-).strip()
+)
 
 MARKET_API_KEY = os.getenv(
     "MARKET_API_KEY",
-    "",
-).strip()
+)
+
+ADMIN_IDS = {
+    int(value.strip())
+    for value in os.getenv(
+        "ADMIN_IDS",
+        "",
+    ).split(",")
+    if value.strip().isdigit()
+}
 
 HOST = os.getenv(
     "HOST",
     "0.0.0.0",
-).strip()
+)
 
 PORT = int(
     os.getenv(
@@ -40,12 +54,9 @@ PORT = int(
     )
 )
 
-OWNER_ID = int(
-    os.getenv(
-        "OWNER_ID",
-        "0",
-    )
-)
+SIGNAL_INTERVAL_MINUTES = 20
+
+WARNING_MINUTES = 2
 
 MIN_SIGNAL_SCORE = float(
     os.getenv(
@@ -61,20 +72,11 @@ MIN_HISTORICAL_PROBABILITY = float(
     )
 )
 
+MIN_PROBABILITY_SAMPLES = int(
+    os.getenv(
+        "MIN_PROBABILITY_SAMPLES",
+        "100",
+    )
+)
 
-def validate_config() -> None:
-
-    if not BOT_TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN не установлен."
-        )
-
-    if not DATABASE_URL:
-        raise RuntimeError(
-            "DATABASE_URL не установлен."
-        )
-
-    if OWNER_ID <= 0:
-        raise RuntimeError(
-            "OWNER_ID не установлен."
-        )
+TIMEZONE = "Europe/Moscow"
