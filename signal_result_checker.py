@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 
 from database import (
     get_pending_signals,
-    update_signal_result,
+    set_signal_entry_price,
+    set_signal_result,
 )
 
 from market import (
@@ -19,6 +19,7 @@ from market import (
 
 from time_utils import (
     MOSCOW,
+    now_moscow,
 )
 
 
@@ -31,185 +32,186 @@ logger = logging.getLogger(
 # НАСТРОЙКИ
 # ============================================================
 
-CHECK_INTERVAL = 10
+CHECK_INTERVAL = 5
 
-RESULT_PRICE_TOLERANCE = 0.0
+PRICE_RETRY_DELAY = 5
+
+MAX_PRICE_RETRIES = 5
+
+RESULT_DELAY_SECONDS = 2
+
+# За сколько секунд до времени закрытия
+# можно начать получать цену входа.
+ENTRY_PRICE_LOOKBACK_SECONDS = 120
 
 
 # ============================================================
-# ОТПРАВКА
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================
 
-async def send_result_to_users(
-    bot: Bot,
-    text: str,
-):
+def parse_close_time(
+    value: str,
+) -> datetime | None:
     """
-    Отправляет результат всем активным пользователям.
+    Преобразует строку вида:
+
+        16:20 МСК
+
+    в datetime сегодняшнего дня.
+
+    Также поддерживает:
+
+        16:20
+
+        2026-08-09 16:20
+
+        2026-08-09 16:20 МСК
+
+        ISO datetime.
     """
 
-    from database import get_active_users
+    if not value:
+        return None
+
+    value = value.strip()
+
+    # --------------------------------------------------------
+    # Убираем МСК
+    # --------------------------------------------------------
+
+    normalized = (
+        value
+        .replace("МСК", "")
+        .strip()
+    )
+
+    # --------------------------------------------------------
+    # ISO datetime
+    # --------------------------------------------------------
 
     try:
 
-        users = await get_active_users()
-
-    except Exception:
-
-        logger.exception(
-            "Could not get active users."
+        parsed = datetime.fromisoformat(
+            normalized
         )
 
-        return
+        if parsed.tzinfo is None:
 
-    for telegram_id in users:
-
-        try:
-
-            await bot.send_message(
-                chat_id=telegram_id,
-                text=text,
-                parse_mode="HTML",
-            )
-
-        except Exception as exc:
-
-            logger.warning(
-                "Could not send result to %s: %s",
-                telegram_id,
-                exc,
-            )
-
-
-# ============================================================
-# ВСПОМОГАТЕЛЬНОЕ
-# ============================================================
-
-def normalize_signal(
-    signal: Any,
-) -> dict[str, Any]:
-    """
-    Приводит объект сигнала к обычному dict.
-
-    Поддерживает dict и ORM-подобные объекты.
-    """
-
-    if isinstance(signal, dict):
-
-        return signal
-
-    result: dict[str, Any] = {}
-
-    fields = (
-        "id",
-        "symbol",
-        "direction",
-        "score",
-        "close_time",
-        "entry_price",
-        "result",
-        "status",
-        "created_at",
-    )
-
-    for field in fields:
-
-        if hasattr(signal, field):
-
-            result[field] = getattr(
-                signal,
-                field,
-            )
-
-    return result
-
-
-def parse_close_time(
-    value: Any,
-) -> datetime | None:
-    """
-    Преобразует время закрытия сигнала
-    в datetime Moscow.
-    """
-
-    if value is None:
-        return None
-
-    if isinstance(
-        value,
-        datetime,
-    ):
-
-        if value.tzinfo is None:
-
-            return value.replace(
+            parsed = parsed.replace(
                 tzinfo=MOSCOW
             )
 
-        return value.astimezone(
-            MOSCOW
-        )
+        else:
 
-    if isinstance(
-        value,
-        str,
-    ):
-
-        text = value.strip()
-
-        # Формат:
-        # 15:20 МСК
-        if text.endswith("МСК"):
-
-            text = text[:-3].strip()
-
-            try:
-
-                parsed = datetime.strptime(
-                    text,
-                    "%H:%M",
-                )
-
-                now = datetime.now(
-                    MOSCOW
-                )
-
-                return now.replace(
-                    hour=parsed.hour,
-                    minute=parsed.minute,
-                    second=0,
-                    microsecond=0,
-                )
-
-            except ValueError:
-
-                pass
-
-        # ISO
-        try:
-
-            parsed = datetime.fromisoformat(
-                text.replace(
-                    "Z",
-                    "+00:00",
-                )
-            )
-
-            if parsed.tzinfo is None:
-
-                parsed = parsed.replace(
-                    tzinfo=MOSCOW
-                )
-
-            return parsed.astimezone(
+            parsed = parsed.astimezone(
                 MOSCOW
             )
 
-        except ValueError:
+        return parsed
 
-            return None
+    except ValueError:
+        pass
+
+    # --------------------------------------------------------
+    # YYYY-MM-DD HH:MM
+    # --------------------------------------------------------
+
+    for fmt in (
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+    ):
+
+        try:
+
+            parsed = datetime.strptime(
+                normalized,
+                fmt,
+            )
+
+            return parsed.replace(
+                tzinfo=MOSCOW
+            )
+
+        except ValueError:
+            continue
+
+    # --------------------------------------------------------
+    # HH:MM
+    # --------------------------------------------------------
+
+    for fmt in (
+        "%H:%M",
+        "%H:%M:%S",
+    ):
+
+        try:
+
+            parsed_time = datetime.strptime(
+                normalized,
+                fmt,
+            )
+
+            now = now_moscow()
+
+            result = now.replace(
+                hour=parsed_time.hour,
+                minute=parsed_time.minute,
+                second=parsed_time.second,
+                microsecond=0,
+            )
+
+            # Если время уже прошло,
+            # предполагаем следующий день.
+            if result < now - timedelta(
+                minutes=5
+            ):
+
+                result += timedelta(
+                    days=1
+                )
+
+            return result
+
+        except ValueError:
+            continue
+
+    logger.warning(
+        "Could not parse close_time: %s",
+        value,
+    )
 
     return None
+
+
+def direction_won(
+    direction: str,
+    entry_price: float,
+    exit_price: float,
+) -> bool:
+
+    direction = (
+        direction
+        .upper()
+        .strip()
+    )
+
+    if direction == "UP":
+
+        return (
+            exit_price
+            > entry_price
+        )
+
+    if direction == "DOWN":
+
+        return (
+            exit_price
+            < entry_price
+        )
+
+    raise ValueError(
+        f"Unknown direction: {direction}"
+    )
 
 
 # ============================================================
@@ -219,110 +221,116 @@ def parse_close_time(
 async def get_current_price(
     market: MarketClient,
     symbol: str,
+) -> float:
+
+    candles = await market.get_candles(
+        symbol=symbol,
+        timeframe="1m",
+        limit=20,
+    )
+
+    if not candles:
+
+        raise MarketDataError(
+            f"No candles for {symbol}"
+        )
+
+    candle = candles[-1]
+
+    return float(
+        candle.close
+    )
+
+
+# ============================================================
+# ПОЛУЧЕНИЕ ENTRY PRICE
+# ============================================================
+
+async def ensure_entry_price(
+    market: MarketClient,
+    signal,
 ) -> float | None:
-    """
-    Получает последнюю доступную цену.
-    """
+
+    if signal.entry_price is not None:
+
+        return float(
+            signal.entry_price
+        )
 
     try:
 
-        candles = await market.get_candles(
-            symbol=symbol,
-            timeframe="1m",
-            limit=3,
+        price = await get_current_price(
+            market=market,
+            symbol=signal.symbol,
         )
-
-    except MarketDataError as exc:
-
-        logger.warning(
-            "Market error for %s: %s",
-            symbol,
-            exc,
-        )
-
-        return None
 
     except Exception:
 
         logger.exception(
-            "Could not get price for %s.",
-            symbol,
+            "Could not get entry price "
+            "for signal #%s",
+            signal.id,
         )
 
         return None
 
-    if not candles:
+    saved = await set_signal_entry_price(
+        signal_id=signal.id,
+        entry_price=price,
+    )
+
+    if not saved:
+
+        logger.warning(
+            "Could not save entry price "
+            "for signal #%s",
+            signal.id,
+        )
 
         return None
 
-    return float(
-        candles[-1].close
+    logger.info(
+        "Signal #%s entry price: %.8f",
+        signal.id,
+        price,
     )
 
-
-# ============================================================
-# ОПРЕДЕЛЕНИЕ РЕЗУЛЬТАТА
-# ============================================================
-
-def calculate_result(
-    direction: str,
-    entry_price: float,
-    exit_price: float,
-) -> str:
-    """
-    Возвращает WIN или LOSS.
-
-    UP:
-        exit > entry = WIN
-
-    DOWN:
-        exit < entry = WIN
-    """
-
-    direction = (
-        direction.upper()
-        .strip()
-    )
-
-    if direction == "UP":
-
-        if exit_price > (
-            entry_price
-            + RESULT_PRICE_TOLERANCE
-        ):
-
-            return "WIN"
-
-        return "LOSS"
-
-    if direction == "DOWN":
-
-        if exit_price < (
-            entry_price
-            - RESULT_PRICE_TOLERANCE
-        ):
-
-            return "WIN"
-
-        return "LOSS"
-
-    raise ValueError(
-        f"Unknown direction: {direction}"
-    )
+    return price
 
 
 # ============================================================
-# ФОРМАТ РЕЗУЛЬТАТА
+# ОТПРАВКА РЕЗУЛЬТАТА
 # ============================================================
 
-def build_result_text(
-    signal_id: int,
-    symbol: str,
-    direction: str,
-    entry_price: float,
-    exit_price: float,
+async def send_result_to_users(
+    bot: Bot,
+    signal,
     result: str,
-) -> str:
+    entry_price: float,
+    exit_price: float,
+):
+    """
+    Отправляет результат всем активным
+    пользователям.
+
+    Импорт get_active_users сделан
+    внутри функции, чтобы не создавать
+    циклические зависимости.
+    """
+
+    from database import (
+        get_active_users,
+    )
+
+    users = await get_active_users()
+
+    if not users:
+
+        logger.info(
+            "No active users for result."
+        )
+
+        return
 
     if result == "WIN":
 
@@ -330,303 +338,299 @@ def build_result_text(
             "🟢 <b>WIN</b>"
         )
 
-        emoji = "🎉"
-
     else:
 
         result_text = (
             "🔴 <b>LOSS</b>"
         )
 
-        emoji = "📉"
+    direction = (
+        signal.direction.upper()
+    )
 
-    if direction.upper() == "UP":
-
-        direction_text = (
-            "📈 ВВЕРХ"
-        )
-
-    else:
-
-        direction_text = (
-            "📉 ВНИЗ"
-        )
-
-    return (
-        f"{emoji} <b>TEYZUS RESULT</b>\n\n"
-
-        f"🆔 Signal #{signal_id}\n"
+    text = (
+        "📊 <b>TEYZUS RESULT</b>\n\n"
 
         f"💱 Пара: "
-        f"<b>{symbol}</b>\n\n"
+        f"<b>{signal.symbol}</b>\n\n"
 
-        f"➡️ Направление: "
-        f"<b>{direction_text}</b>\n\n"
+        f"Направление: "
+        f"<b>{direction}</b>\n\n"
 
         f"💰 Цена входа: "
-        f"<b>{entry_price}</b>\n"
+        f"<b>{entry_price:.8f}</b>\n\n"
 
         f"💰 Цена закрытия: "
-        f"<b>{exit_price}</b>\n\n"
+        f"<b>{exit_price:.8f}</b>\n\n"
 
-        f"🏆 Результат: "
+        f"Результат: "
         f"{result_text}\n\n"
 
-        "⚠️ Результат рассчитан "
-        "автоматически по рыночным данным."
+        f"🆔 Signal #{signal.id}"
     )
+
+    for telegram_id in users:
+
+        try:
+
+            await bot.send_message(
+                telegram_id,
+                text,
+                parse_mode="HTML",
+            )
+
+        except Exception as exc:
+
+            logger.warning(
+                "Result send error "
+                "%s: %s",
+                telegram_id,
+                exc,
+            )
 
 
 # ============================================================
 # ПРОВЕРКА ОДНОГО СИГНАЛА
 # ============================================================
 
-async def check_signal(
+async def check_signal_result(
     bot: Bot,
     market: MarketClient,
-    signal: Any,
+    signal,
 ) -> bool:
     """
     Проверяет один сигнал.
 
-    Возвращает True, если результат был установлен.
+    Возвращает:
+
+        True  — проверка завершена
+        False — пока проверить нельзя
     """
 
-    data = normalize_signal(
-        signal
+    logger.info(
+        "Checking signal #%s (%s)",
+        signal.id,
+        signal.symbol,
     )
 
-    signal_id = data.get(
-        "id"
-    )
-
-    symbol = data.get(
-        "symbol"
-    )
-
-    direction = data.get(
-        "direction"
-    )
+    # --------------------------------------------------------
+    # CLOSE TIME
+    # --------------------------------------------------------
 
     close_time = parse_close_time(
-        data.get(
-            "close_time"
-        )
+        signal.close_time
     )
-
-    entry_price = data.get(
-        "entry_price"
-    )
-
-    # --------------------------------------------------------
-    # Проверка данных
-    # --------------------------------------------------------
-
-    if signal_id is None:
-
-        logger.warning(
-            "Signal without id."
-        )
-
-        return False
-
-    if not symbol:
-
-        logger.warning(
-            "Signal #%s without symbol.",
-            signal_id,
-        )
-
-        return False
-
-    if not direction:
-
-        logger.warning(
-            "Signal #%s without direction.",
-            signal_id,
-        )
-
-        return False
 
     if close_time is None:
 
-        logger.warning(
-            "Signal #%s has invalid close time.",
-            signal_id,
+        logger.error(
+            "Invalid close_time for "
+            "signal #%s: %s",
+            signal.id,
+            signal.close_time,
         )
 
         return False
 
-    now = datetime.now(
-        MOSCOW
+    now = now_moscow()
+
+    # --------------------------------------------------------
+    # ENTRY PRICE
+    # --------------------------------------------------------
+
+    entry_price = (
+        await ensure_entry_price(
+            market=market,
+            signal=signal,
+        )
     )
 
-    # Сигнал ещё не закрылся.
+    if entry_price is None:
+
+        logger.warning(
+            "Entry price unavailable "
+            "for signal #%s.",
+            signal.id,
+        )
+
+        return False
+
+    # --------------------------------------------------------
+    # ЕЩЁ НЕ ВРЕМЯ ЗАКРЫТИЯ
+    # --------------------------------------------------------
+
     if now < close_time:
 
         return False
 
     # --------------------------------------------------------
-    # Получаем цену
+    # НЕБОЛЬШАЯ ЗАДЕРЖКА
     # --------------------------------------------------------
 
-    exit_price = await get_current_price(
-        market=market,
-        symbol=symbol,
-    )
+    if RESULT_DELAY_SECONDS > 0:
 
-    if exit_price is None:
-
-        logger.warning(
-            "No exit price for signal #%s.",
-            signal_id,
+        await asyncio.sleep(
+            RESULT_DELAY_SECONDS
         )
 
-        return False
-
     # --------------------------------------------------------
-    # Если entry_price уже сохранён
+    # ПОЛУЧАЕМ EXIT PRICE
     # --------------------------------------------------------
 
-    if entry_price is not None:
+    exit_price = None
+
+    for attempt in range(
+        1,
+        MAX_PRICE_RETRIES + 1,
+    ):
 
         try:
 
-            entry_price = float(
-                entry_price
+            exit_price = (
+                await get_current_price(
+                    market=market,
+                    symbol=signal.symbol,
+                )
             )
+
+            break
 
         except (
-            TypeError,
-            ValueError,
-        ):
+            MarketDataError,
+            asyncio.TimeoutError,
+        ) as exc:
 
-            entry_price = None
-
-    # --------------------------------------------------------
-    # Если цена входа отсутствует
-    # --------------------------------------------------------
-
-    if entry_price is None:
-
-        logger.warning(
-            "Signal #%s has no entry price.",
-            signal_id,
-        )
-
-        return False
-
-    # --------------------------------------------------------
-    # Результат
-    # --------------------------------------------------------
-
-    try:
-
-        result = calculate_result(
-            direction=direction,
-            entry_price=entry_price,
-            exit_price=exit_price,
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Could not calculate result for #%s.",
-            signal_id,
-        )
-
-        return False
-
-    # --------------------------------------------------------
-    # Сохраняем
-    # --------------------------------------------------------
-
-    try:
-
-        await update_signal_result(
-            signal_id=signal_id,
-            result=result,
-            exit_price=exit_price,
-        )
-
-    except TypeError:
-
-        # Если database.py пока имеет
-        # старую сигнатуру.
-
-        try:
-
-            await update_signal_result(
-                signal_id,
-                result,
-                exit_price,
+            logger.warning(
+                "Exit price attempt "
+                "%s/%s failed for "
+                "signal #%s: %s",
+                attempt,
+                MAX_PRICE_RETRIES,
+                signal.id,
+                exc,
             )
+
+            if attempt < MAX_PRICE_RETRIES:
+
+                await asyncio.sleep(
+                    PRICE_RETRY_DELAY
+                )
 
         except Exception:
 
             logger.exception(
-                "Could not update signal #%s.",
-                signal_id,
+                "Unexpected price error "
+                "for signal #%s.",
+                signal.id,
             )
 
-            return False
+            if attempt < MAX_PRICE_RETRIES:
 
-    except Exception:
+                await asyncio.sleep(
+                    PRICE_RETRY_DELAY
+                )
 
-        logger.exception(
-            "Could not update signal #%s.",
-            signal_id,
+    if exit_price is None:
+
+        logger.error(
+            "Could not get exit price "
+            "for signal #%s.",
+            signal.id,
         )
 
         return False
 
     # --------------------------------------------------------
-    # Сообщение
+    # ОПРЕДЕЛЯЕМ WIN / LOSS
     # --------------------------------------------------------
 
-    text = build_result_text(
-        signal_id=signal_id,
-        symbol=symbol,
-        direction=direction,
-        entry_price=entry_price,
-        exit_price=exit_price,
-        result=result,
+    try:
+
+        won = direction_won(
+            direction=signal.direction,
+            entry_price=entry_price,
+            exit_price=exit_price,
+        )
+
+    except ValueError:
+
+        logger.exception(
+            "Invalid direction for "
+            "signal #%s.",
+            signal.id,
+        )
+
+        return False
+
+    result = (
+        "WIN"
+        if won
+        else "LOSS"
     )
 
-    await send_result_to_users(
-        bot,
-        text,
+    # --------------------------------------------------------
+    # СОХРАНЯЕМ РЕЗУЛЬТАТ
+    # --------------------------------------------------------
+
+    saved = await set_signal_result(
+        signal_id=signal.id,
+        result_value=result,
+        exit_price=exit_price,
     )
+
+    if not saved:
+
+        logger.error(
+            "Could not save result "
+            "for signal #%s.",
+            signal.id,
+        )
+
+        return False
 
     logger.info(
-        "Signal #%s result: %s",
-        signal_id,
+        "Signal #%s => %s | "
+        "entry=%.8f | exit=%.8f",
+        signal.id,
         result,
+        entry_price,
+        exit_price,
+    )
+
+    # --------------------------------------------------------
+    # ОТПРАВЛЯЕМ РЕЗУЛЬТАТ
+    # --------------------------------------------------------
+
+    await send_result_to_users(
+        bot=bot,
+        signal=signal,
+        result=result,
+        entry_price=entry_price,
+        exit_price=exit_price,
     )
 
     return True
 
 
 # ============================================================
-# ОДИН ЦИКЛ CHECKER
+# ОСНОВНОЙ ЦИКЛ
 # ============================================================
 
 async def run_result_check_cycle(
     bot: Bot,
     market: MarketClient,
 ):
-    """
-    Проверяет все сигналы, которые ожидают результата.
-    """
 
     try:
 
-        signals = await get_pending_signals()
+        signals = (
+            await get_pending_signals()
+        )
 
     except Exception:
 
         logger.exception(
-            "Could not get pending signals."
+            "Could not load pending signals."
         )
 
         return
@@ -644,30 +648,32 @@ async def run_result_check_cycle(
 
         try:
 
-            await check_signal(
+            await check_signal_result(
                 bot=bot,
                 market=market,
                 signal=signal,
             )
 
+        except asyncio.CancelledError:
+
+            raise
+
         except Exception:
 
             logger.exception(
-                "Unexpected error while checking signal."
+                "Signal #%s check failed.",
+                signal.id,
             )
 
 
 # ============================================================
-# ПОСТОЯННЫЙ CHECKER
+# RESULT CHECKER
 # ============================================================
 
 async def signal_result_checker(
     bot: Bot,
     market: MarketClient,
 ):
-    """
-    Бесконечный фоновый цикл проверки результатов.
-    """
 
     logger.info(
         "Signal result checker started."
