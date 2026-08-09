@@ -1,48 +1,51 @@
 from __future__ import annotations
+
 from datetime import datetime
+from enum import Enum
 from zoneinfo import ZoneInfo
+
+
 MOSCOW = ZoneInfo(
     "Europe/Moscow"
 )
-def is_market_session_active(
-    value: datetime | None = None,
-) -> bool:
-    if value is None:
-        value = datetime.now(
-            MOSCOW
+
+
+class MarketSession(str, Enum):
+    ASIA = "ASIA"
+    EUROPE = "EUROPE"
+    US = "US"
+    OVERLAP = "OVERLAP"
+    UNKNOWN = "UNKNOWN"
+
+
+def get_market_session(
+    timestamp: datetime | None,
+) -> MarketSession:
+
+    if timestamp is None:
+        return MarketSession.UNKNOWN
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(
+            tzinfo=MOSCOW
         )
-    else:
-        value = value.astimezone(
-            MOSCOW
-        )
-    weekday = value.weekday()
-    # Суббота и воскресенье.
-    if weekday >= 5:
-        return False
-    hour = value.hour
-    # Ночью ликвидность для выбранной
-    # стратегии считаем недостаточной.
-    if hour < 7:
-        return False
-    if hour >= 23:
-        return False
-    return True
-def session_name(
-    value: datetime | None = None,
-) -> str:
-    if value is None:
-        value = datetime.now(
-            MOSCOW
-        )
-    else:
-        value = value.astimezone(
-            MOSCOW
-        )
-    hour = value.hour
-    if 7 <= hour < 12:
-        return "EUROPE"
-    if 12 <= hour < 17:
-        return "EUROPE_US"
-    if 17 <= hour < 23:
-        return "US"
-    return "OFF"
+
+    timestamp = timestamp.astimezone(
+        MOSCOW
+    )
+
+    hour = timestamp.hour
+
+    if 3 <= hour < 10:
+        return MarketSession.ASIA
+
+    if 10 <= hour < 16:
+        return MarketSession.EUROPE
+
+    if 16 <= hour < 19:
+        return MarketSession.OVERLAP
+
+    if 19 <= hour < 24:
+        return MarketSession.US
+
+    return MarketSession.UNKNOWN
