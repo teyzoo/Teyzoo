@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, Iterable
+from typing import Awaitable, Callable
 
 from market import (
     Candle,
@@ -15,14 +16,63 @@ from market import (
 )
 from models import Direction
 from quality_filter import (
-    QualityFilter,
     QualityResult,
     TimeframeAnalysis,
     analyze_timeframe,
+    quality_filter,
 )
 
 
 logger = logging.getLogger("signal_scanner")
+
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
+
+
+SCAN_INTERVAL_SECONDS = int(
+    os.getenv(
+        "SIGNAL_SCAN_INTERVAL",
+        "300",
+    )
+)
+
+CANDLE_LIMIT = int(
+    os.getenv(
+        "SIGNAL_CANDLE_LIMIT",
+        "200",
+    )
+)
+
+MINIMUM_QUALITY = float(
+    os.getenv(
+        "SIGNAL_MINIMUM_QUALITY",
+        "85",
+    )
+)
+
+# Таймфреймы для подтверждения.
+#
+# ВАЖНО:
+# Чем больше таймфреймов, тем больше API-запросов.
+#
+# По умолчанию:
+#
+# 1m
+# 5m
+# 15m
+#
+# Этого достаточно для быстрой системы сигналов.
+#
+TIMEFRAMES = tuple(
+    item.strip()
+    for item in os.getenv(
+        "SIGNAL_TIMEFRAMES",
+        "1m,5m,15m",
+    ).split(",")
+    if item.strip()
+)
 
 
 # =========================================================
@@ -37,113 +87,75 @@ SignalCallback = Callable[
 
 
 # =========================================================
-# DATA MODELS
+# TRADING SIGNAL
 # =========================================================
 
 
 @dataclass(slots=True)
 class TradingSignal:
-    """
-    Готовый сигнал, который прошёл QualityFilter.
-
-    Этот объект можно передать в Telegram handler,
-    notification service или другой отправитель.
-    """
-
     symbol: str
+
     direction: Direction
+
     quality_score: float
 
     confirmations: int
+
     total_checks: int
 
-    timeframe_results: list[TimeframeAnalysis]
+    timeframe_results: list[
+        TimeframeAnalysis
+    ]
 
     reasons: list[str]
-    created_at: datetime
 
-    candle_timeframe: str = "5m"
+    created_at: datetime
 
     @property
     def direction_text(self) -> str:
         if self.direction == Direction.UP:
-            return "UP"
+            return "🟢 CALL / UP"
 
         if self.direction == Direction.DOWN:
-            return "DOWN"
+            return "🔴 PUT / DOWN"
 
-        return str(self.direction)
+        return "⚪ UNKNOWN"
 
     @property
-    def quality_percent(self) -> float:
-        return max(
-            0.0,
-            min(
-                100.0,
-                float(self.quality_score),
-            ),
-        )
+    def emoji(self) -> str:
+        if self.direction == Direction.UP:
+            return "🟢"
+
+        if self.direction == Direction.DOWN:
+            return "🔴"
+
+        return "⚪"
+
+
+# =========================================================
+# SCANNER STATISTICS
+# =========================================================
 
 
 @dataclass(slots=True)
-class PairScanResult:
-    """
-    Результат анализа одной пары.
-
-    Здесь может быть как сигнал,
-    так и обычный rejected результат.
-    """
-
-    symbol: str
-
-    accepted: bool
-
-    quality_score: float
-
-    direction: Direction | None
-
-    confirmations: int
-
-    total_checks: int
-
-    timeframe_results: list[TimeframeAnalysis] = field(
-        default_factory=list
-    )
-
-    reasons: list[str] = field(
-        default_factory=list
-    )
-
-    rejected_reasons: list[str] = field(
-        default_factory=list
-    )
-
-    error: str | None = None
-
-
-@dataclass(slots=True)
-class ScannerStatistics:
-    """
-    Статистика работы автоматического сканера.
-    """
-
+class ScannerStats:
     cycles: int = 0
 
     pairs_seen: int = 0
-    pairs_scanned: int = 0
+
+    pairs_analyzed: int = 0
 
     signals_found: int = 0
+
     signals_sent: int = 0
 
-    rejected_signals: int = 0
+    rejected: int = 0
+
     errors: int = 0
 
-    started_at: float = field(
-        default_factory=time.monotonic
-    )
+    rate_limits: int = 0
 
-    last_cycle_started_at: datetime | None = None
-    last_cycle_finished_at: datetime | None = None
+    last_cycle_at: datetime | None = None
 
     last_signal_at: datetime | None = None
 
@@ -157,221 +169,201 @@ class SignalScanner:
     """
     Автоматический сканер торговых пар.
 
-    Основной цикл:
+    Основная задача:
 
-        scanner.start()
-             ↓
-        каждые 5 минут
-             ↓
-        получить пары
-             ↓
-        анализировать пары
-             ↓
-        получить свечи
-             ↓
-        analyze_timeframe()
-             ↓
-        QualityFilter
-             ↓
-        если качество >= minimum_quality
-             ↓
-        callback(signal)
+        1. Получить список пар.
+        2. Выбрать очередные пары.
+        3. Получить свечи.
+        4. Проанализировать каждый таймфрейм.
+        5. Передать результаты в QualityFilter.
+        6. Если качество >= порога:
+               создать TradingSignal
+        7. Отправить сигнал через callback.
+        8. Через 5 минут повторить.
 
-    =====================================================
-    ВАЖНО
-    =====================================================
+    Сканер специально работает последовательно.
 
-    Сканер НЕ отправляет Telegram-сообщения напрямую.
-
-    Вместо этого используется:
-
-        on_signal(signal)
-
-    В main.py можно подключить:
-
-        async def send_signal(signal):
-            await bot.send_message(...)
-
-    Это позволяет не связывать scanner с aiogram.
+    Это важно для Twelve Data, потому что API имеет
+    ограничение количества запросов в минуту.
     """
 
     def __init__(
         self,
         market_client: MarketClient,
-        quality_filter: QualityFilter | None = None,
-        symbols: Iterable[str] | None = None,
-        timeframes: tuple[str, ...] = (
-            "1m",
-            "5m",
-            "15m",
-        ),
-        candle_limit: int = 200,
-        scan_interval: int = 300,
-        minimum_quality: float = 85.0,
-        minimum_confirmations: int = 2,
-        max_concurrent_pairs: int = 2,
-        on_signal: SignalCallback | None = None,
-        signal_cooldown: int = 300,
+        send_signal: SignalCallback | None = None,
+        symbols: list[str] | None = None,
+        timeframes: tuple[str, ...] = TIMEFRAMES,
+        scan_interval: int = SCAN_INTERVAL_SECONDS,
+        candle_limit: int = CANDLE_LIMIT,
+        minimum_quality: float = MINIMUM_QUALITY,
     ) -> None:
-
-        # =================================================
-        # MARKET
-        # =================================================
-
         self.market_client = market_client
 
-        # =================================================
-        # QUALITY
-        # =================================================
+        self.send_signal = send_signal
 
-        self.quality_filter = (
-            quality_filter
-            or QualityFilter(
-                minimum_quality=minimum_quality
-            )
+        self.timeframes = tuple(
+            timeframe.strip()
+            for timeframe in timeframes
+            if timeframe.strip()
+        )
+
+        self.scan_interval = max(
+            30,
+            int(scan_interval),
+        )
+
+        self.candle_limit = max(
+            20,
+            int(candle_limit),
         )
 
         self.minimum_quality = float(
             minimum_quality
         )
 
-        self.minimum_confirmations = max(
-            1,
-            int(minimum_confirmations),
+        # -------------------------------------------------
+        # PAIRS
+        # -------------------------------------------------
+
+        self.symbols = self._normalize_symbols(
+            symbols
+            if symbols is not None
+            else self._load_symbols_from_env()
         )
 
-        # =================================================
-        # SYMBOLS
-        # =================================================
+        # -------------------------------------------------
+        # ROTATION
+        # -------------------------------------------------
 
-        self._configured_symbols: list[str] = []
+        self._pair_index = 0
 
-        if symbols is not None:
-            self._configured_symbols = (
-                self._normalize_symbols(
-                    symbols
-                )
-            )
+        # -------------------------------------------------
+        # STATE
+        # -------------------------------------------------
 
-        # =================================================
-        # TIMEFRAMES
-        # =================================================
-
-        if not timeframes:
-            raise ValueError(
-                "At least one timeframe is required."
-            )
-
-        self.timeframes = tuple(
-            str(timeframe).strip()
-            for timeframe in timeframes
-            if str(timeframe).strip()
-        )
-
-        if not self.timeframes:
-            raise ValueError(
-                "At least one valid timeframe is required."
-            )
-
-        # =================================================
-        # CANDLES
-        # =================================================
-
-        if candle_limit < 20:
-            raise ValueError(
-                "candle_limit must be at least 20."
-            )
-
-        if candle_limit > 5000:
-            raise ValueError(
-                "candle_limit cannot exceed 5000."
-            )
-
-        self.candle_limit = int(
-            candle_limit
-        )
-
-        # =================================================
-        # SCHEDULER
-        # =================================================
-
-        if scan_interval < 30:
-            raise ValueError(
-                "scan_interval must be at least 30 seconds."
-            )
-
-        self.scan_interval = int(
-            scan_interval
-        )
-
-        # =================================================
-        # CONCURRENCY
-        # =================================================
-
-        self.max_concurrent_pairs = max(
-            1,
-            int(max_concurrent_pairs),
-        )
-
-        self._pair_semaphore = asyncio.Semaphore(
-            self.max_concurrent_pairs
-        )
-
-        # =================================================
-        # CALLBACK
-        # =================================================
-
-        self.on_signal = on_signal
-
-        # =================================================
-        # DUPLICATE PROTECTION
-        # =================================================
-
-        self.signal_cooldown = max(
-            0,
-            int(signal_cooldown),
-        )
-
-        self._last_signal_times: dict[
-            str,
-            float,
-        ] = {}
-
-        self._signal_lock = asyncio.Lock()
-
-        # =================================================
-        # LOOP CONTROL
-        # =================================================
+        self._running = False
 
         self._task: asyncio.Task[None] | None = None
 
         self._stop_event = asyncio.Event()
 
-        self._running = False
+        self._scan_lock = asyncio.Lock()
 
-        # =================================================
-        # STATISTICS
-        # =================================================
+        # -------------------------------------------------
+        # DUPLICATE SIGNAL PROTECTION
+        # -------------------------------------------------
 
-        self.statistics = ScannerStatistics()
+        self._last_signal_key: dict[
+            str,
+            tuple[
+                Direction,
+                int,
+            ],
+        ] = {}
 
-        logger.info(
-            (
-                "SignalScanner initialized | "
-                "timeframes=%s | "
-                "candle_limit=%s | "
-                "interval=%ss | "
-                "min_quality=%.2f | "
-                "min_confirmations=%s | "
-                "concurrency=%s"
-            ),
-            self.timeframes,
-            self.candle_limit,
-            self.scan_interval,
-            self.minimum_quality,
-            self.minimum_confirmations,
-            self.max_concurrent_pairs,
+        self._last_signal_time: dict[
+            str,
+            float,
+        ] = {}
+
+        # Не отправляем один и тот же сигнал
+        # бесконечно на каждом цикле.
+        #
+        # 5 минут = 300 секунд.
+        #
+        self.signal_cooldown = int(
+            os.getenv(
+                "SIGNAL_COOLDOWN",
+                "300",
+            )
         )
+
+        # -------------------------------------------------
+        # STATISTICS
+        # -------------------------------------------------
+
+        self.stats = ScannerStats()
+
+    # =====================================================
+    # LOAD SYMBOLS FROM ENV
+    # =====================================================
+
+    @staticmethod
+    def _load_symbols_from_env() -> list[str]:
+        """
+        Загружает пары из:
+
+            MARKET_SYMBOLS
+
+        Например:
+
+            EUR/USD,GBP/USD,USD/JPY,
+            AUD/USD,USD/CAD,USD/CHF,
+            NZD/USD,EUR/GBP
+
+        Если переменная не задана, используется
+        расширенный стандартный список Forex.
+        """
+
+        raw = os.getenv(
+            "MARKET_SYMBOLS",
+            "",
+        ).strip()
+
+        if raw:
+            return [
+                item.strip()
+                for item in raw.split(",")
+                if item.strip()
+            ]
+
+        # -------------------------------------------------
+        # DEFAULT FOREX WATCHLIST
+        # -------------------------------------------------
+
+        return [
+            # Major
+            "EUR/USD",
+            "GBP/USD",
+            "USD/JPY",
+            "USD/CHF",
+            "USD/CAD",
+            "AUD/USD",
+            "NZD/USD",
+
+            # EUR
+            "EUR/GBP",
+            "EUR/JPY",
+            "EUR/CHF",
+            "EUR/AUD",
+            "EUR/CAD",
+            "EUR/NZD",
+
+            # GBP
+            "GBP/JPY",
+            "GBP/CHF",
+            "GBP/AUD",
+            "GBP/CAD",
+            "GBP/NZD",
+
+            # CHF
+            "CHF/JPY",
+
+            # AUD
+            "AUD/JPY",
+            "AUD/CHF",
+            "AUD/CAD",
+            "AUD/NZD",
+
+            # CAD
+            "CAD/JPY",
+            "CAD/CHF",
+
+            # NZD
+            "NZD/JPY",
+            "NZD/CHF",
+            "NZD/CAD",
+        ]
 
     # =====================================================
     # NORMALIZE SYMBOLS
@@ -379,136 +371,169 @@ class SignalScanner:
 
     @staticmethod
     def _normalize_symbols(
-        symbols: Iterable[str],
+        symbols: list[str],
     ) -> list[str]:
-
         result: list[str] = []
 
         seen: set[str] = set()
 
-        for raw_symbol in symbols:
-
-            symbol = (
-                str(raw_symbol)
+        for symbol in symbols:
+            normalized = (
+                str(symbol)
                 .strip()
                 .upper()
             )
 
-            if not symbol:
+            if not normalized:
                 continue
 
-            # ---------------------------------------------
             # EURUSD -> EUR/USD
-            # ---------------------------------------------
-
             if (
-                "/" not in symbol
-                and len(symbol) == 6
-                and symbol.isalpha()
+                "/" not in normalized
+                and len(normalized) == 6
+                and normalized.isalpha()
             ):
-                symbol = (
-                    f"{symbol[:3]}/"
-                    f"{symbol[3:]}"
+                normalized = (
+                    normalized[:3]
+                    + "/"
+                    + normalized[3:]
                 )
 
-            if symbol in seen:
+            if normalized in seen:
                 continue
 
-            seen.add(symbol)
+            seen.add(normalized)
 
             result.append(
-                symbol
+                normalized
             )
 
         return result
 
     # =====================================================
+    # SET SYMBOLS
+    # =====================================================
+
+    def set_symbols(
+        self,
+        symbols: list[str],
+    ) -> None:
+        normalized = (
+            self._normalize_symbols(
+                symbols
+            )
+        )
+
+        if not normalized:
+            raise ValueError(
+                "Symbol list cannot be empty."
+            )
+
+        self.symbols = normalized
+
+        self._pair_index = 0
+
+        logger.info(
+            "Scanner symbols updated: %s pairs.",
+            len(self.symbols),
+        )
+
+    # =====================================================
     # GET SYMBOLS
     # =====================================================
 
-    async def get_symbols(self) -> list[str]:
-        """
-        Получает список пар для сканирования.
-
-        Приоритет:
-
-        1. Если MarketProvider имеет
-           get_available_symbols() —
-           используем его.
-
-        2. Иначе используем symbols,
-           переданные в конструктор.
-
-        3. Если ничего нет —
-           возвращаем пустой список.
-        """
-
-        provider = (
-            self.market_client.provider
+    def get_symbols(self) -> list[str]:
+        return list(
+            self.symbols
         )
 
-        # =================================================
-        # DYNAMIC SYMBOL PROVIDER
-        # =================================================
+    # =====================================================
+    # NEXT SYMBOLS
+    # =====================================================
 
-        method = getattr(
-            provider,
-            "get_available_symbols",
-            None,
-        )
+    def _get_next_symbols(
+        self,
+    ) -> list[str]:
+        """
+        Возвращает пары для очередного прохода.
 
-        if callable(method):
+        Если включён:
 
+            SIGNAL_PAIRS_PER_CYCLE
+
+        то за один цикл берётся только указанное
+        количество пар.
+
+        Это позволяет работать с Twelve Data
+        даже при маленьком API лимите.
+        """
+
+        if not self.symbols:
+            return []
+
+        configured = os.getenv(
+            "SIGNAL_PAIRS_PER_CYCLE",
+            "",
+        ).strip()
+
+        if configured:
             try:
-                result = method()
-
-                if asyncio.iscoroutine(result):
-                    result = await result
-
-                symbols = self._normalize_symbols(
-                    result
+                pairs_per_cycle = max(
+                    1,
+                    int(configured),
                 )
-
-                if symbols:
-
-                    logger.info(
-                        (
-                            "Loaded %s symbols "
-                            "from market provider."
-                        ),
-                        len(symbols),
-                    )
-
-                    return symbols
-
-            except Exception as exc:
-
-                logger.exception(
-                    (
-                        "Could not load "
-                        "available symbols "
-                        "from market provider: %s"
-                    ),
-                    exc,
+            except ValueError:
+                pairs_per_cycle = len(
+                    self.symbols
                 )
+        else:
+            # -------------------------------------------------
+            # Автоматический безопасный режим.
+            #
+            # При 3 таймфреймах:
+            #
+            # 7 запросов/min
+            #
+            # максимум примерно 2 пары/min.
+            #
+            # За 5 минут можно обработать ~10 пар.
+            # Оставляем запас.
+            # -------------------------------------------------
 
-        # =================================================
-        # CONFIGURED SYMBOLS
-        # =================================================
+            request_budget = 6
 
-        symbols = list(
-            self._configured_symbols
+            pairs_per_cycle = max(
+                1,
+                request_budget
+                // max(
+                    1,
+                    len(self.timeframes),
+                ),
+            )
+
+        pairs_per_cycle = min(
+            pairs_per_cycle,
+            len(self.symbols),
         )
 
-        logger.info(
-            (
-                "Using configured symbols: "
-                "%s"
-            ),
-            len(symbols),
-        )
+        result: list[str] = []
 
-        return symbols
+        for _ in range(
+            pairs_per_cycle
+        ):
+            symbol = self.symbols[
+                self._pair_index
+            ]
+
+            result.append(
+                symbol
+            )
+
+            self._pair_index = (
+                self._pair_index + 1
+            ) % len(self.symbols)
+
+        return result
 
     # =====================================================
     # START
@@ -516,67 +541,58 @@ class SignalScanner:
 
     async def start(
         self,
-        immediate: bool = True,
     ) -> None:
-        """
-        Запускает автоматический scanner.
-
-        immediate=True:
-
-            сразу выполняется первый scan,
-
-            потом следующий через interval.
-
-        immediate=False:
-
-            ждём первый interval.
-        """
-
         if self._running:
             logger.warning(
-                "SignalScanner is already running."
+                "Signal scanner already running."
             )
             return
+
+        if not self.symbols:
+            raise RuntimeError(
+                "Signal scanner has no symbols."
+            )
+
+        if not self.timeframes:
+            raise RuntimeError(
+                "Signal scanner has no timeframes."
+            )
 
         self._running = True
 
         self._stop_event.clear()
-
-        logger.info(
-            "Starting automatic signal scanner."
-        )
 
         self._task = asyncio.create_task(
             self._run_loop(),
             name="signal-scanner",
         )
 
-        if not immediate:
-
-            logger.info(
-                (
-                    "First scanner cycle "
-                    "will start in %s seconds."
-                ),
-                self.scan_interval,
-            )
+        logger.info(
+            (
+                "Signal scanner started | "
+                "pairs=%s | "
+                "timeframes=%s | "
+                "interval=%ss | "
+                "quality>=%.1f"
+            ),
+            len(self.symbols),
+            self.timeframes,
+            self.scan_interval,
+            self.minimum_quality,
+        )
 
     # =====================================================
     # STOP
     # =====================================================
 
-    async def stop(self) -> None:
-
+    async def stop(
+        self,
+    ) -> None:
         if not self._running:
-
-            logger.info(
-                "SignalScanner is not running."
-            )
-
             return
 
         logger.info(
-            "Stopping automatic signal scanner."
+            "Stopping signal scanner..."
         )
 
         self._running = False
@@ -588,7 +604,6 @@ class SignalScanner:
         self._task = None
 
         if task is not None:
-
             try:
                 await task
 
@@ -596,155 +611,81 @@ class SignalScanner:
                 pass
 
         logger.info(
-            "Automatic signal scanner stopped."
+            "Signal scanner stopped."
         )
 
     # =====================================================
     # RUN LOOP
     # =====================================================
 
-    async def _run_loop(self) -> None:
+    async def _run_loop(
+        self,
+    ) -> None:
+        """
+        Главный бесконечный цикл.
 
-        first_cycle = True
+        После каждого прохода ждём 5 минут.
+        """
 
-        try:
+        # Небольшая задержка после запуска,
+        # чтобы остальные компоненты приложения
+        # успели полностью стартовать.
+        await asyncio.sleep(
+            2
+        )
 
-            while not self._stop_event.is_set():
+        while self._running:
+            cycle_started = time.monotonic()
 
-                # -----------------------------------------
-                # WAIT BEFORE FIRST CYCLE
-                # -----------------------------------------
+            try:
+                await self.scan_once()
 
-                if (
-                    first_cycle
-                    and not self._should_run_immediately()
-                ):
-                    try:
+            except asyncio.CancelledError:
+                raise
 
-                        await asyncio.wait_for(
-                            self._stop_event.wait(),
-                            timeout=self.scan_interval,
-                        )
+            except Exception:
+                self.stats.errors += 1
 
-                    except asyncio.TimeoutError:
-                        pass
-
-                    if self._stop_event.is_set():
-                        break
-
-                first_cycle = False
-
-                # -----------------------------------------
-                # SCAN
-                # -----------------------------------------
-
-                cycle_started = time.monotonic()
-
-                self.statistics.cycles += 1
-
-                self.statistics.last_cycle_started_at = (
-                    datetime.now(
-                        timezone.utc
-                    )
+                logger.exception(
+                    "Unexpected signal scanner error."
                 )
 
-                logger.info(
-                    (
-                        "========== "
-                        "SCANNER CYCLE #%s START "
-                        "=========="
-                    ),
-                    self.statistics.cycles,
-                )
+            # -------------------------------------------------
+            # CALCULATE WAIT
+            # -------------------------------------------------
 
-                try:
-
-                    await self.scan_once()
-
-                except asyncio.CancelledError:
-                    raise
-
-                except Exception as exc:
-
-                    self.statistics.errors += 1
-
-                    logger.exception(
-                        (
-                            "Unexpected scanner "
-                            "cycle error: %s"
-                        ),
-                        exc,
-                    )
-
-                # -----------------------------------------
-                # CYCLE FINISHED
-                # -----------------------------------------
-
-                self.statistics.last_cycle_finished_at = (
-                    datetime.now(
-                        timezone.utc
-                    )
-                )
-
-                elapsed = (
-                    time.monotonic()
-                    - cycle_started
-                )
-
-                logger.info(
-                    (
-                        "========== "
-                        "SCANNER CYCLE #%s END | "
-                        "duration=%.2fs "
-                        "=========="
-                    ),
-                    self.statistics.cycles,
-                    elapsed,
-                )
-
-                # -----------------------------------------
-                # WAIT UNTIL NEXT CYCLE
-                # -----------------------------------------
-
-                if self._stop_event.is_set():
-                    break
-
-                logger.info(
-                    (
-                        "Next scanner cycle "
-                        "in %s seconds."
-                    ),
-                    self.scan_interval,
-                )
-
-                try:
-
-                    await asyncio.wait_for(
-                        self._stop_event.wait(),
-                        timeout=self.scan_interval,
-                    )
-
-                except asyncio.TimeoutError:
-                    pass
-
-        except asyncio.CancelledError:
-
-            logger.info(
-                "Scanner loop cancelled."
+            elapsed = (
+                time.monotonic()
+                - cycle_started
             )
 
-            raise
+            wait_for = max(
+                1.0,
+                self.scan_interval
+                - elapsed,
+            )
 
-        finally:
+            logger.info(
+                (
+                    "Scanner cycle finished | "
+                    "elapsed=%.1fs | "
+                    "next cycle in=%.1fs"
+                ),
+                elapsed,
+                wait_for,
+            )
 
-            self._running = False
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=wait_for,
+                )
 
-    # =====================================================
-    # IMMEDIATE MODE
-    # =====================================================
+                # stop event
+                break
 
-    def _should_run_immediately(self) -> bool:
-        return True
+            except asyncio.TimeoutError:
+                pass
 
     # =====================================================
     # SCAN ONCE
@@ -752,803 +693,526 @@ class SignalScanner:
 
     async def scan_once(
         self,
-    ) -> list[PairScanResult]:
+    ) -> list[TradingSignal]:
         """
-        Один полный цикл сканирования.
-
-        Возвращает результаты всех пар.
+        Один полный проход очередных пар.
         """
 
-        symbols = await self.get_symbols()
+        async with self._scan_lock:
+            self.stats.cycles += 1
 
-        self.statistics.pairs_seen += len(
-            symbols
-        )
-
-        if not symbols:
-
-            logger.warning(
-                (
-                    "No market symbols "
-                    "available for scanning."
+            self.stats.last_cycle_at = (
+                datetime.now(
+                    timezone.utc
                 )
             )
 
-            return []
-
-        logger.info(
-            (
-                "Starting market scan: "
-                "%s symbols."
-            ),
-            len(symbols),
-        )
-
-        # =================================================
-        # CREATE TASKS
-        # =================================================
-
-        tasks = [
-            asyncio.create_task(
-                self.scan_pair(
-                    symbol
-                )
-            )
-            for symbol in symbols
-        ]
-
-        # =================================================
-        # EXECUTE
-        # =================================================
-
-        raw_results = await asyncio.gather(
-            *tasks,
-            return_exceptions=True,
-        )
-
-        results: list[PairScanResult] = []
-
-        # =================================================
-        # PROCESS RESULTS
-        # =================================================
-
-        for symbol, result in zip(
-            symbols,
-            raw_results,
-        ):
-
-            if isinstance(
-                result,
-                asyncio.CancelledError,
-            ):
-                continue
-
-            if isinstance(
-                result,
-                Exception,
-            ):
-
-                self.statistics.errors += 1
-
-                logger.error(
-                    (
-                        "Unhandled pair scan "
-                        "error for %s: %s"
-                    ),
-                    symbol,
-                    result,
-                )
-
-                results.append(
-                    PairScanResult(
-                        symbol=symbol,
-                        accepted=False,
-                        quality_score=0.0,
-                        direction=None,
-                        confirmations=0,
-                        total_checks=0,
-                        rejected_reasons=[
-                            str(result)
-                        ],
-                        error=str(result),
-                    )
-                )
-
-                continue
-
-            results.append(
-                result
+            symbols = (
+                self._get_next_symbols()
             )
 
-        # =================================================
-        # SUMMARY
-        # =================================================
-
-        accepted = [
-            item
-            for item in results
-            if item.accepted
-        ]
-
-        rejected = [
-            item
-            for item in results
-            if not item.accepted
-        ]
-
-        logger.info(
-            (
-                "Market scan completed | "
-                "pairs=%s | "
-                "accepted=%s | "
-                "rejected=%s"
-            ),
-            len(results),
-            len(accepted),
-            len(rejected),
-        )
-
-        # =================================================
-        # SORT SIGNALS BY QUALITY
-        # =================================================
-
-        accepted.sort(
-            key=lambda item: (
-                item.quality_score,
-                item.confirmations,
-            ),
-            reverse=True,
-        )
-
-        if accepted:
-
-            logger.info(
-                "Top signals:"
+            self.stats.pairs_seen += len(
+                symbols
             )
-
-            for item in accepted[:10]:
-
-                logger.info(
-                    (
-                        "SIGNAL | "
-                        "%s | "
-                        "%s | "
-                        "quality=%.2f | "
-                        "confirmations=%s/%s"
-                    ),
-                    item.symbol,
-                    item.direction,
-                    item.quality_score,
-                    item.confirmations,
-                    item.total_checks,
-                )
-
-        return results
-
-    # =====================================================
-    # SCAN PAIR
-    # =====================================================
-
-    async def scan_pair(
-        self,
-        symbol: str,
-    ) -> PairScanResult:
-        """
-        Анализирует одну торговую пару.
-        """
-
-        symbol = (
-            str(symbol)
-            .strip()
-            .upper()
-        )
-
-        if (
-            "/" not in symbol
-            and len(symbol) == 6
-            and symbol.isalpha()
-        ):
-            symbol = (
-                f"{symbol[:3]}/"
-                f"{symbol[3:]}"
-            )
-
-        async with self._pair_semaphore:
-
-            self.statistics.pairs_scanned += 1
 
             logger.info(
                 (
-                    "Scanning pair: "
-                    "%s"
+                    "=============================="
+                    "=============================="
+                )
+            )
+
+            logger.info(
+                (
+                    "SIGNAL SCAN START | "
+                    "cycle=%s | "
+                    "pairs=%s | "
+                    "timeframes=%s"
                 ),
-                symbol,
+                self.stats.cycles,
+                len(symbols),
+                self.timeframes,
             )
 
-            # =================================================
-            # LOAD TIMEFRAMES
-            # =================================================
-
-            analyses: list[
-                TimeframeAnalysis
+            signals: list[
+                TradingSignal
             ] = []
 
-            for timeframe in self.timeframes:
-
-                if self._stop_event.is_set():
+            for symbol in symbols:
+                if not self._running:
                     break
 
                 try:
-
-                    candles = (
-                        await self.market_client.get_candles(
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            limit=self.candle_limit,
+                    signal = (
+                        await self._analyze_symbol(
+                            symbol
                         )
                     )
 
-                except MarketRateLimitError as exc:
+                    self.stats.pairs_analyzed += 1
 
-                    logger.warning(
-                        (
-                            "Rate limit while "
-                            "scanning %s %s: %s"
-                        ),
-                        symbol,
-                        timeframe,
-                        exc,
-                    )
+                    if signal is None:
+                        self.stats.rejected += 1
+                        continue
 
-                    return PairScanResult(
-                        symbol=symbol,
-                        accepted=False,
-                        quality_score=0.0,
-                        direction=None,
-                        confirmations=0,
-                        total_checks=len(
-                            analyses
-                        ),
-                        timeframe_results=analyses,
-                        rejected_reasons=[
-                            (
-                                "Market API "
-                                "rate limit."
-                            )
-                        ],
-                        error=str(exc),
-                    )
-
-                except (
-                    MarketDataError,
-                    ValueError,
-                ) as exc:
-
-                    logger.warning(
-                        (
-                            "Could not load "
-                            "%s %s: %s"
-                        ),
-                        symbol,
-                        timeframe,
-                        exc,
-                    )
-
-                    continue
-
-                except Exception as exc:
-
-                    logger.exception(
-                        (
-                            "Unexpected candle "
-                            "error for %s %s: %s"
-                        ),
-                        symbol,
-                        timeframe,
-                        exc,
-                    )
-
-                    continue
-
-                # =================================================
-                # ANALYZE TIMEFRAME
-                # =================================================
-
-                try:
-
-                    analysis = (
-                        analyze_timeframe(
-                            timeframe=timeframe,
-                            candles=candles,
-                        )
-                    )
-
-                except Exception as exc:
-
-                    logger.exception(
-                        (
-                            "Signal engine "
-                            "error for %s %s: %s"
-                        ),
-                        symbol,
-                        timeframe,
-                    )
-
-                    continue
-
-                analyses.append(
-                    analysis
-                )
-
-            # =================================================
-            # NO DATA
-            # =================================================
-
-            if not analyses:
-
-                logger.info(
-                    (
-                        "Pair rejected: "
-                        "%s | "
-                        "no timeframe analysis."
-                    ),
-                    symbol,
-                )
-
-                return PairScanResult(
-                    symbol=symbol,
-                    accepted=False,
-                    quality_score=0.0,
-                    direction=None,
-                    confirmations=0,
-                    total_checks=0,
-                    timeframe_results=[],
-                    rejected_reasons=[
-                        (
-                            "Не удалось получить "
-                            "рыночные данные."
-                        )
-                    ],
-                )
-
-            # =================================================
-            # QUALITY FILTER
-            # =================================================
-
-            try:
-
-                quality = (
-                    self.quality_filter.evaluate(
-                        analyses
-                    )
-                )
-
-            except Exception as exc:
-
-                logger.exception(
-                    (
-                        "QualityFilter error "
-                        "for %s: %s"
-                    ),
-                    symbol,
-                    exc,
-                )
-
-                self.statistics.errors += 1
-
-                return PairScanResult(
-                    symbol=symbol,
-                    accepted=False,
-                    quality_score=0.0,
-                    direction=None,
-                    confirmations=0,
-                    total_checks=len(
-                        analyses
-                    ),
-                    timeframe_results=analyses,
-                    rejected_reasons=[
-                        (
-                            "Ошибка анализа "
-                            "качества сигнала."
-                        )
-                    ],
-                    error=str(exc),
-                )
-
-            # =================================================
-            # EXTRA CONFIRMATION CHECK
-            # =================================================
-
-            if (
-                quality.confirmations
-                < self.minimum_confirmations
-            ):
-
-                logger.info(
-                    (
-                        "Pair rejected: %s | "
-                        "confirmations=%s < %s"
-                    ),
-                    symbol,
-                    quality.confirmations,
-                    self.minimum_confirmations,
-                )
-
-                rejected_reasons = list(
-                    quality.rejected_reasons
-                )
-
-                rejected_reasons.append(
-                    (
-                        "Недостаточно подтверждений "
-                        "по таймфреймам."
-                    )
-                )
-
-                self.statistics.rejected_signals += 1
-
-                return PairScanResult(
-                    symbol=symbol,
-                    accepted=False,
-                    quality_score=quality.quality_score,
-                    direction=None,
-                    confirmations=quality.confirmations,
-                    total_checks=quality.total_checks,
-                    timeframe_results=quality.timeframe_results,
-                    reasons=quality.reasons,
-                    rejected_reasons=rejected_reasons,
-                )
-
-            # =================================================
-            # EXTRA QUALITY CHECK
-            # =================================================
-
-            if (
-                quality.quality_score
-                < self.minimum_quality
-            ):
-
-                logger.info(
-                    (
-                        "Pair rejected: %s | "
-                        "quality=%.2f < %.2f"
-                    ),
-                    symbol,
-                    quality.quality_score,
-                    self.minimum_quality,
-                )
-
-                rejected_reasons = list(
-                    quality.rejected_reasons
-                )
-
-                if not rejected_reasons:
-
-                    rejected_reasons.append(
-                        (
-                            "Качество ниже "
-                            "минимального порога."
-                        )
-                    )
-
-                self.statistics.rejected_signals += 1
-
-                return PairScanResult(
-                    symbol=symbol,
-                    accepted=False,
-                    quality_score=quality.quality_score,
-                    direction=None,
-                    confirmations=quality.confirmations,
-                    total_checks=quality.total_checks,
-                    timeframe_results=quality.timeframe_results,
-                    reasons=quality.reasons,
-                    rejected_reasons=rejected_reasons,
-                )
-
-            # =================================================
-            # QUALITY FILTER REJECTED
-            # =================================================
-
-            if not quality.accepted:
-
-                logger.info(
-                    (
-                        "Pair rejected by "
-                        "QualityFilter: %s | "
-                        "quality=%.2f | "
-                        "reasons=%s"
-                    ),
-                    symbol,
-                    quality.quality_score,
-                    quality.rejected_reasons,
-                )
-
-                self.statistics.rejected_signals += 1
-
-                return PairScanResult(
-                    symbol=symbol,
-                    accepted=False,
-                    quality_score=quality.quality_score,
-                    direction=None,
-                    confirmations=quality.confirmations,
-                    total_checks=quality.total_checks,
-                    timeframe_results=quality.timeframe_results,
-                    reasons=quality.reasons,
-                    rejected_reasons=quality.rejected_reasons,
-                )
-
-            # =================================================
-            # DIRECTION CHECK
-            # =================================================
-
-            if quality.direction is None:
-
-                logger.info(
-                    (
-                        "Pair rejected: %s | "
-                        "no final direction."
-                    ),
-                    symbol,
-                )
-
-                self.statistics.rejected_signals += 1
-
-                return PairScanResult(
-                    symbol=symbol,
-                    accepted=False,
-                    quality_score=quality.quality_score,
-                    direction=None,
-                    confirmations=quality.confirmations,
-                    total_checks=quality.total_checks,
-                    timeframe_results=quality.timeframe_results,
-                    reasons=quality.reasons,
-                    rejected_reasons=[
-                        (
-                            "Нет итогового "
-                            "направления."
-                        )
-                    ],
-                )
-
-            # =================================================
-            # DUPLICATE / COOLDOWN
-            # =================================================
-
-            can_send = (
-                await self._can_send_signal(
-                    symbol=symbol,
-                    direction=quality.direction,
-                )
-            )
-
-            if not can_send:
-
-                logger.info(
-                    (
-                        "Pair has valid signal "
-                        "but cooldown is active: "
-                        "%s"
-                    ),
-                    symbol,
-                )
-
-                return PairScanResult(
-                    symbol=symbol,
-                    accepted=False,
-                    quality_score=quality.quality_score,
-                    direction=quality.direction,
-                    confirmations=quality.confirmations,
-                    total_checks=quality.total_checks,
-                    timeframe_results=quality.timeframe_results,
-                    reasons=quality.reasons,
-                    rejected_reasons=[
-                        (
-                            "Сигнал по этой паре "
-                            "уже недавно отправлялся."
-                        )
-                    ],
-                )
-
-            # =================================================
-            # CREATE SIGNAL
-            # =================================================
-
-            signal = TradingSignal(
-                symbol=symbol,
-                direction=quality.direction,
-                quality_score=quality.quality_score,
-                confirmations=quality.confirmations,
-                total_checks=quality.total_checks,
-                timeframe_results=quality.timeframe_results,
-                reasons=quality.reasons,
-                created_at=datetime.now(
-                    timezone.utc
-                ),
-                candle_timeframe=(
-                    "5m"
-                    if "5m" in self.timeframes
-                    else self.timeframes[0]
-                ),
-            )
-
-            # =================================================
-            # REGISTER SIGNAL
-            # =================================================
-
-            await self._register_signal(
-                signal
-            )
-
-            self.statistics.signals_found += 1
-
-            self.statistics.last_signal_at = (
-                signal.created_at
-            )
-
-            logger.info(
-                (
-                    "🔥 SIGNAL FOUND | "
-                    "%s | "
-                    "%s | "
-                    "quality=%.2f | "
-                    "confirmations=%s/%s"
-                ),
-                symbol,
-                signal.direction,
-                signal.quality_score,
-                signal.confirmations,
-                signal.total_checks,
-            )
-
-            # =================================================
-            # CALLBACK
-            # =================================================
-
-            if self.on_signal is not None:
-
-                try:
-
-                    await self.on_signal(
+                    signals.append(
                         signal
                     )
 
-                    self.statistics.signals_sent += 1
+                    self.stats.signals_found += 1
 
                     logger.info(
                         (
-                            "Signal callback "
-                            "completed: %s"
+                            "SIGNAL FOUND | "
+                            "%s | "
+                            "%s | "
+                            "quality=%.2f | "
+                            "confirmations=%s/%s"
                         ),
-                        symbol,
+                        signal.symbol,
+                        signal.direction,
+                        signal.quality_score,
+                        signal.confirmations,
+                        signal.total_checks,
                     )
 
-                except asyncio.CancelledError:
-                    raise
+                    await self._send_signal(
+                        signal
+                    )
 
-                except Exception as exc:
+                except MarketRateLimitError as exc:
+                    self.stats.rate_limits += 1
 
-                    self.statistics.errors += 1
-
-                    logger.exception(
+                    logger.warning(
                         (
-                            "Signal callback "
-                            "failed for %s: %s"
+                            "RATE LIMIT while "
+                            "analyzing %s: %s"
                         ),
                         symbol,
                         exc,
                     )
 
-            return PairScanResult(
-                symbol=symbol,
-                accepted=True,
-                quality_score=quality.quality_score,
-                direction=quality.direction,
-                confirmations=quality.confirmations,
-                total_checks=quality.total_checks,
-                timeframe_results=quality.timeframe_results,
-                reasons=quality.reasons,
-                rejected_reasons=[],
+                    # Нет смысла продолжать мгновенно
+                    # делать новые запросы.
+                    #
+                    # Twelve Data cooldown обработает
+                    # сам MarketProvider.
+                    break
+
+                except MarketDataError as exc:
+                    logger.warning(
+                        (
+                            "Market data error "
+                            "for %s: %s"
+                        ),
+                        symbol,
+                        exc,
+                    )
+
+                except ValueError as exc:
+                    logger.warning(
+                        (
+                            "Invalid market data "
+                            "for %s: %s"
+                        ),
+                        symbol,
+                        exc,
+                    )
+
+                except Exception:
+                    self.stats.errors += 1
+
+                    logger.exception(
+                        "Error analyzing symbol %s.",
+                        symbol,
+                    )
+
+            logger.info(
+                (
+                    "SIGNAL SCAN END | "
+                    "signals=%s | "
+                    "analyzed=%s | "
+                    "rejected=%s"
+                ),
+                len(signals),
+                len(symbols),
+                max(
+                    0,
+                    len(symbols)
+                    - len(signals),
+                ),
             )
 
+            return signals
+
     # =====================================================
-    # CHECK SIGNAL COOLDOWN
+    # ANALYZE SYMBOL
     # =====================================================
 
-    async def _can_send_signal(
+    async def _analyze_symbol(
         self,
         symbol: str,
-        direction: Direction,
-    ) -> bool:
+    ) -> TradingSignal | None:
+        """
+        Анализ одной пары.
 
-        if self.signal_cooldown <= 0:
-            return True
+        Для каждого таймфрейма:
 
-        key = (
-            f"{symbol}:"
-            f"{direction}"
+            candles
+                ↓
+            signal_engine
+                ↓
+            TimeframeAnalysis
+
+        Потом:
+
+            QualityFilter
+                ↓
+            QualityResult
+        """
+
+        logger.info(
+            (
+                "Analyzing pair %s | "
+                "timeframes=%s"
+            ),
+            symbol,
+            self.timeframes,
         )
 
-        now = time.monotonic()
+        analyses: list[
+            TimeframeAnalysis
+        ] = []
 
-        async with self._signal_lock:
-
-            last_time = (
-                self._last_signal_times.get(
-                    key
-                )
-            )
-
-            if last_time is None:
-                return True
-
-            elapsed = (
-                now
-                - last_time
-            )
-
-            if elapsed >= self.signal_cooldown:
-                return True
+        for timeframe in self.timeframes:
+            if not self._running:
+                return None
 
             logger.debug(
                 (
-                    "Signal cooldown active | "
+                    "Loading candles | "
                     "symbol=%s | "
-                    "direction=%s | "
-                    "remaining=%.1fs"
+                    "timeframe=%s | "
+                    "limit=%s"
                 ),
                 symbol,
-                direction,
-                self.signal_cooldown
-                - elapsed,
+                timeframe,
+                self.candle_limit,
             )
 
-            return False
+            try:
+                candles = (
+                    await self.market_client.get_candles(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        limit=self.candle_limit,
+                    )
+                )
+
+            except MarketRateLimitError:
+                raise
+
+            except (
+                MarketDataError,
+                ValueError,
+            ) as exc:
+                logger.warning(
+                    (
+                        "Could not load candles "
+                        "for %s %s: %s"
+                    ),
+                    symbol,
+                    timeframe,
+                    exc,
+                )
+
+                # Если один TF недоступен,
+                # не ломаем весь анализ пары.
+                continue
+
+            if len(candles) < 20:
+                logger.warning(
+                    (
+                        "Too few candles "
+                        "for %s %s: %s"
+                    ),
+                    symbol,
+                    timeframe,
+                    len(candles),
+                )
+
+                continue
+
+            try:
+                analysis = (
+                    analyze_timeframe(
+                        timeframe=timeframe,
+                        candles=candles,
+                    )
+                )
+
+            except Exception:
+                self.stats.errors += 1
+
+                logger.exception(
+                    (
+                        "Signal engine error "
+                        "for %s %s"
+                    ),
+                    symbol,
+                    timeframe,
+                )
+
+                continue
+
+            analyses.append(
+                analysis
+            )
+
+        # -------------------------------------------------
+        # NOT ENOUGH TIMEFRAMES
+        # -------------------------------------------------
+
+        if not analyses:
+            logger.info(
+                (
+                    "No timeframe analysis "
+                    "available for %s."
+                ),
+                symbol,
+            )
+
+            return None
+
+        # -------------------------------------------------
+        # QUALITY FILTER
+        # -------------------------------------------------
+
+        result = self._evaluate_quality(
+            analyses
+        )
+
+        if not result.accepted:
+            logger.info(
+                (
+                    "Signal rejected | "
+                    "%s | "
+                    "quality=%.2f | "
+                    "reasons=%s"
+                ),
+                symbol,
+                result.quality_score,
+                result.rejected_reasons,
+            )
+
+            return None
+
+        # -------------------------------------------------
+        # DUPLICATE PROTECTION
+        # -------------------------------------------------
+
+        if self._is_duplicate_signal(
+            symbol=symbol,
+            result=result,
+        ):
+            logger.info(
+                (
+                    "Duplicate signal skipped | "
+                    "%s | direction=%s"
+                ),
+                symbol,
+                result.direction,
+            )
+
+            return None
+
+        # -------------------------------------------------
+        # CREATE SIGNAL
+        # -------------------------------------------------
+
+        if result.direction is None:
+            return None
+
+        signal = TradingSignal(
+            symbol=symbol,
+            direction=result.direction,
+            quality_score=result.quality_score,
+            confirmations=result.confirmations,
+            total_checks=result.total_checks,
+            timeframe_results=result.timeframe_results,
+            reasons=list(
+                result.reasons
+            ),
+            created_at=datetime.now(
+                timezone.utc
+            ),
+        )
+
+        return signal
 
     # =====================================================
-    # REGISTER SIGNAL
+    # QUALITY
     # =====================================================
 
-    async def _register_signal(
+    def _evaluate_quality(
+        self,
+        analyses: list[
+            TimeframeAnalysis
+        ],
+    ) -> QualityResult:
+        """
+        Используем существующий QualityFilter.
+
+        Порог minimum_quality устанавливается
+        перед оценкой.
+        """
+
+        # -------------------------------------------------
+        # Обычно используется глобальный quality_filter.
+        #
+        # Чтобы не ломать существующий объект,
+        # применяем его напрямую, если порог совпадает.
+        # -------------------------------------------------
+
+        if abs(
+            quality_filter.minimum_quality
+            - self.minimum_quality
+        ) < 0.0001:
+            return quality_filter.evaluate(
+                analyses
+            )
+
+        # -------------------------------------------------
+        # Создаём локальный фильтр с требуемым
+        # порогом.
+        # -------------------------------------------------
+
+        from quality_filter import QualityFilter
+
+        local_filter = QualityFilter(
+            minimum_quality=self.minimum_quality
+        )
+
+        return local_filter.evaluate(
+            analyses
+        )
+
+    # =====================================================
+    # DUPLICATE SIGNAL
+    # =====================================================
+
+    def _is_duplicate_signal(
+        self,
+        symbol: str,
+        result: QualityResult,
+    ) -> bool:
+        if result.direction is None:
+            return True
+
+        now = time.monotonic()
+
+        last_time = (
+            self._last_signal_time.get(
+                symbol
+            )
+        )
+
+        last_key = (
+            self._last_signal_key.get(
+                symbol
+            )
+        )
+
+        current_key = (
+            result.direction,
+            int(
+                result.quality_score
+                // 5
+            ),
+        )
+
+        # -------------------------------------------------
+        # Если сигнал был недавно и направление
+        # осталось тем же — не спамим.
+        # -------------------------------------------------
+
+        if (
+            last_time is not None
+            and now - last_time
+            < self.signal_cooldown
+            and last_key is not None
+            and last_key[0]
+            == current_key[0]
+        ):
+            return True
+
+        self._last_signal_time[
+            symbol
+        ] = now
+
+        self._last_signal_key[
+            symbol
+        ] = current_key
+
+        return False
+
+    # =====================================================
+    # SEND SIGNAL
+    # =====================================================
+
+    async def _send_signal(
         self,
         signal: TradingSignal,
     ) -> None:
+        """
+        Передача сигнала наружу.
 
-        if self.signal_cooldown <= 0:
+        Например:
+
+            scanner = SignalScanner(
+                market_client=market_client,
+                send_signal=send_signal,
+            )
+
+        где send_signal отправляет сообщение
+        в Telegram.
+        """
+
+        if self.send_signal is None:
+            logger.warning(
+                (
+                    "Signal found but "
+                    "send_signal callback "
+                    "is not configured: %s"
+                ),
+                signal.symbol,
+            )
+
             return
 
-        key = (
-            f"{signal.symbol}:"
-            f"{signal.direction}"
-        )
+        try:
+            await self.send_signal(
+                signal
+            )
 
-        async with self._signal_lock:
+            self.stats.signals_sent += 1
 
-            self._last_signal_times[
-                key
-            ] = time.monotonic()
-
-            # ---------------------------------------------
-            # CLEAN OLD ENTRIES
-            # ---------------------------------------------
-
-            now = time.monotonic()
-
-            expired = [
-                key
-                for key, timestamp
-                in self._last_signal_times.items()
-                if (
-                    now - timestamp
-                    > self.signal_cooldown * 3
+            self.stats.last_signal_at = (
+                datetime.now(
+                    timezone.utc
                 )
-            ]
+            )
 
-            for expired_key in expired:
+        except Exception:
+            self.stats.errors += 1
 
-                self._last_signal_times.pop(
-                    expired_key,
-                    None,
-                )
+            logger.exception(
+                (
+                    "Failed to send signal "
+                    "for %s."
+                ),
+                signal.symbol,
+            )
 
     # =====================================================
     # FORMAT SIGNAL
@@ -1559,97 +1223,73 @@ class SignalScanner:
         signal: TradingSignal,
     ) -> str:
         """
-        Формирует готовый Telegram-текст.
-
-        Можно использовать напрямую в main.py.
+        Готовый Telegram-текст сигнала.
         """
 
-        if signal.direction == Direction.UP:
-            direction_text = "🟢 CALL / UP"
-
-        elif signal.direction == Direction.DOWN:
-            direction_text = "🔴 PUT / DOWN"
-
-        else:
-            direction_text = str(
-                signal.direction
-            )
-
-        lines: list[str] = []
-
-        lines.append(
-            "🚨 НОВЫЙ СИГНАЛ"
+        direction = (
+            signal.direction_text
         )
 
-        lines.append("")
+        lines = [
+            "🚨 <b>НОВЫЙ СИГНАЛ</b>",
+            "",
+            f"💱 <b>Пара:</b> "
+            f"<code>{signal.symbol}</code>",
+            "",
+            f"{signal.emoji} "
+            f"<b>Направление:</b> "
+            f"{direction}",
+            "",
+            f"⭐ <b>Качество:</b> "
+            f"{signal.quality_score:.1f}%",
+            "",
+            f"✅ <b>Подтверждения:</b> "
+            f"{signal.confirmations}/"
+            f"{signal.total_checks}",
+            "",
+            "📊 <b>Таймфреймы:</b>",
+        ]
 
-        lines.append(
-            f"💱 Пара: {signal.symbol}"
-        )
+        for item in (
+            signal.timeframe_results
+        ):
+            if item.direction == Direction.UP:
+                direction_text = "🟢 UP"
 
-        lines.append(
-            f"📊 Направление: {direction_text}"
-        )
+            elif item.direction == Direction.DOWN:
+                direction_text = "🔴 DOWN"
 
-        lines.append(
-            (
-                f"⭐ Качество: "
-                f"{signal.quality_percent:.1f}%"
-            )
-        )
-
-        lines.append(
-            (
-                f"✅ Подтверждения: "
-                f"{signal.confirmations}/"
-                f"{signal.total_checks}"
-            )
-        )
-
-        lines.append(
-            (
-                f"⏱ Таймфреймы: "
-                f"{', '.join(self_timeframes(signal))}"
-            )
-        )
-
-        if signal.reasons:
-
-            lines.append("")
+            else:
+                direction_text = "⚪ НЕТ"
 
             lines.append(
-                "📌 Подтверждения:"
+                (
+                    f"• <b>{item.timeframe}</b> — "
+                    f"{direction_text} — "
+                    f"{item.score:.1f}%"
+                )
             )
 
-            unique_reasons: list[str] = []
+        if signal.reasons:
+            lines.extend(
+                [
+                    "",
+                    "🧠 <b>Подтверждения:</b>",
+                ]
+            )
 
-            for reason in signal.reasons:
-
-                text = str(
-                    reason
-                ).strip()
-
-                if not text:
-                    continue
-
-                if text in unique_reasons:
-                    continue
-
-                unique_reasons.append(
-                    text
-                )
-
-            for reason in unique_reasons[:10]:
-
+            # Не отправляем сотни причин.
+            for reason in signal.reasons[:8]:
                 lines.append(
                     f"• {reason}"
                 )
 
-        lines.append("")
-
-        lines.append(
-            "⚠️ Сигнал прошёл автоматический "
-            "фильтр качества."
+        lines.extend(
+            [
+                "",
+                "⏱ <b>Сигнал сформирован:</b> "
+                f"{signal.created_at.strftime('%H:%M:%S')} UTC",
+            ]
         )
 
         return "\n".join(
@@ -1657,195 +1297,101 @@ class SignalScanner:
         )
 
     # =====================================================
-    # RUN SINGLE PAIR MANUALLY
+    # STATS
     # =====================================================
 
-    async def analyze_symbol(
+    def get_stats(
         self,
-        symbol: str,
-    ) -> PairScanResult:
-
-        return await self.scan_pair(
-            symbol
-        )
+    ) -> ScannerStats:
+        return self.stats
 
     # =====================================================
-    # MANUAL SYMBOL UPDATE
-    # =====================================================
-
-    def set_symbols(
-        self,
-        symbols: Iterable[str],
-    ) -> None:
-
-        self._configured_symbols = (
-            self._normalize_symbols(
-                symbols
-            )
-        )
-
-        logger.info(
-            (
-                "Scanner symbols updated: "
-                "%s pairs."
-            ),
-            len(
-                self._configured_symbols
-            ),
-        )
-
-    # =====================================================
-    # ADD SYMBOL
-    # =====================================================
-
-    def add_symbol(
-        self,
-        symbol: str,
-    ) -> None:
-
-        normalized = self._normalize_symbols(
-            [symbol]
-        )
-
-        if not normalized:
-            return
-
-        for item in normalized:
-
-            if item not in self._configured_symbols:
-
-                self._configured_symbols.append(
-                    item
-                )
-
-        logger.info(
-            (
-                "Symbol added to scanner: "
-                "%s"
-            ),
-            normalized,
-        )
-
-    # =====================================================
-    # REMOVE SYMBOL
-    # =====================================================
-
-    def remove_symbol(
-        self,
-        symbol: str,
-    ) -> None:
-
-        normalized = self._normalize_symbols(
-            [symbol]
-        )
-
-        if not normalized:
-            return
-
-        target = normalized[0]
-
-        self._configured_symbols = [
-            item
-            for item
-            in self._configured_symbols
-            if item != target
-        ]
-
-        logger.info(
-            (
-                "Symbol removed from scanner: "
-                "%s"
-            ),
-            target,
-        )
-
-    # =====================================================
-    # IS RUNNING
+    # STATUS
     # =====================================================
 
     @property
-    def is_running(self) -> bool:
+    def running(self) -> bool:
         return self._running
 
-    # =====================================================
-    # GET STATISTICS
-    # =====================================================
-
-    def get_statistics(
-        self,
-    ) -> ScannerStatistics:
-
-        return ScannerStatistics(
-            cycles=self.statistics.cycles,
-            pairs_seen=self.statistics.pairs_seen,
-            pairs_scanned=self.statistics.pairs_scanned,
-            signals_found=self.statistics.signals_found,
-            signals_sent=self.statistics.signals_sent,
-            rejected_signals=self.statistics.rejected_signals,
-            errors=self.statistics.errors,
-            started_at=self.statistics.started_at,
-            last_cycle_started_at=(
-                self.statistics.last_cycle_started_at
-            ),
-            last_cycle_finished_at=(
-                self.statistics.last_cycle_finished_at
-            ),
-            last_signal_at=(
-                self.statistics.last_signal_at
-            ),
-        )
-
 
 # =========================================================
-# HELPERS
+# TELEGRAM CALLBACK HELPER
 # =========================================================
 
 
-def self_timeframes(
+async def telegram_signal_sender(
+    bot,
+    chat_id: int,
     signal: TradingSignal,
-) -> list[str]:
+) -> None:
+    """
+    Готовый callback для Aiogram Bot.
 
-    return [
-        item.timeframe
-        for item in signal.timeframe_results
-        if item.direction == signal.direction
-    ]
+    Использование:
+
+        scanner = SignalScanner(
+            market_client=market_client,
+            send_signal=lambda signal:
+                telegram_signal_sender(
+                    bot,
+                    ADMIN_ID,
+                    signal,
+                ),
+        )
+    """
+
+    text = (
+        SignalScanner.format_signal(
+            signal
+        )
+    )
+
+    await bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="HTML",
+    )
 
 
 # =========================================================
-# DEFAULT FOREX SYMBOLS
+# SIMPLE FACTORY
 # =========================================================
 
-DEFAULT_FOREX_SYMBOLS: tuple[str, ...] = (
-    "EUR/USD",
-    "GBP/USD",
-    "USD/JPY",
-    "USD/CHF",
-    "AUD/USD",
-    "USD/CAD",
-    "NZD/USD",
-    "EUR/GBP",
-    "EUR/JPY",
-    "GBP/JPY",
-    "EUR/CHF",
-    "GBP/CHF",
-    "AUD/JPY",
-    "CAD/JPY",
-    "CHF/JPY",
-    "EUR/AUD",
-    "EUR/CAD",
-    "EUR/NZD",
-    "GBP/AUD",
-    "GBP/CAD",
-    "GBP/NZD",
-    "AUD/CAD",
-    "AUD/CHF",
-    "AUD/NZD",
-    "CAD/CHF",
-    "NZD/JPY",
-    "NZD/CAD",
-    "NZD/CHF",
-)
+
+def create_signal_scanner(
+    market_client: MarketClient,
+    send_signal: SignalCallback | None = None,
+) -> SignalScanner:
+    """
+    Создаёт scanner из Environment Variables.
+
+    Environment:
+
+        SIGNAL_SCAN_INTERVAL=300
+
+        SIGNAL_CANDLE_LIMIT=200
+
+        SIGNAL_MINIMUM_QUALITY=85
+
+        SIGNAL_TIMEFRAMES=1m,5m,15m
+
+        SIGNAL_PAIRS_PER_CYCLE=2
+
+        SIGNAL_COOLDOWN=300
+
+        MARKET_SYMBOLS=
+        EUR/USD,GBP/USD,USD/JPY
+    """
+
+    return SignalScanner(
+        market_client=market_client,
+        send_signal=send_signal,
+        symbols=None,
+        timeframes=TIMEFRAMES,
+        scan_interval=SCAN_INTERVAL_SECONDS,
+        candle_limit=CANDLE_LIMIT,
+        minimum_quality=MINIMUM_QUALITY,
+    )
 
 
 # =========================================================
@@ -1855,8 +1401,8 @@ DEFAULT_FOREX_SYMBOLS: tuple[str, ...] = (
 
 __all__ = [
     "TradingSignal",
-    "PairScanResult",
-    "ScannerStatistics",
+    "ScannerStats",
     "SignalScanner",
-    "DEFAULT_FOREX_SYMBOLS",
+    "telegram_signal_sender",
+    "create_signal_scanner",
 ]
