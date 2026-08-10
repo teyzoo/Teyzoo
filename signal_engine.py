@@ -3,9 +3,6 @@ from dataclasses import dataclass
 from indicators import calculate_indicators
 from market import Candle
 from models import Direction
-# =========================================================
-# ANALYSIS RESULT
-# =========================================================
 @dataclass(slots=True)
 class AnalysisResult:
     direction: Direction | None
@@ -13,56 +10,38 @@ class AnalysisResult:
     reasons: list[str]
     confirmations: int
     total_checks: int
-# =========================================================
-# SIGNAL ENGINE
-# =========================================================
 class SignalEngine:
     """
-    Основной движок анализа торгового сигнала.
-    Использует:
-        • EMA
-        • RSI
-        • MACD
-        • Bollinger Bands
-    В отличие от старой версии, score больше не является
-    только 25 / 50 / 75 / 100.
-    Каждый индикатор имеет силу от 0 до 1.
-    Итоговый score рассчитывается по фактической силе
-    подтверждений.
+    Основной движок анализа одного таймфрейма.
+    Индикаторы:
+        EMA       = 25%
+        RSI       = 25%
+        MACD      = 30%
+        Bollinger = 20%
     ВАЖНО:
-        score != гарантия прибыльности.
-    Это внутренняя оценка силы технического сигнала.
+    Нейтральный индикатор не считается
+    отрицательным сигналом.
+    Например:
+        EMA bullish
+        MACD bullish
+        RSI neutral
+        Bollinger neutral
+    даст:
+        25 + 30 = 55%
+    а не 50% из-за деления
+    на все 4 проверки.
+    Это позволяет score показывать
+    реальную силу направленных сигналов.
     """
-    # -----------------------------------------------------
+    # =====================================================
+    # WEIGHTS
+    # =====================================================
+    EMA_WEIGHT = 25.0
+    RSI_WEIGHT = 25.0
+    MACD_WEIGHT = 30.0
+    BOLLINGER_WEIGHT = 20.0
     # Минимальное количество свечей
-    # -----------------------------------------------------
     MIN_CANDLES = 50
-    # -----------------------------------------------------
-    # Минимальная разница между bullish и bearish
-    # -----------------------------------------------------
-    #
-    # Если разница слишком маленькая, рынок считается
-    # неопределённым.
-    #
-    # Например:
-    #
-    # bullish = 0.95
-    # bearish = 0.90
-    #
-    # Это не достаточно сильное преимущество.
-    #
-    MIN_DIRECTION_ADVANTAGE = 0.08
-    # -----------------------------------------------------
-    # Минимальная сила одного индикатора
-    # -----------------------------------------------------
-    MIN_INDICATOR_STRENGTH = 0.15
-    # -----------------------------------------------------
-    # Веса индикаторов
-    # -----------------------------------------------------
-    EMA_WEIGHT = 1.00
-    RSI_WEIGHT = 1.00
-    MACD_WEIGHT = 1.10
-    BOLLINGER_WEIGHT = 0.90
     # =====================================================
     # ANALYZE
     # =====================================================
@@ -70,45 +49,51 @@ class SignalEngine:
         self,
         candles: list[Candle],
     ) -> AnalysisResult:
-        # -------------------------------------------------
-        # CANDLE VALIDATION
-        # -------------------------------------------------
+        # =================================================
+        # CANDLES
+        # =================================================
         if len(candles) < self.MIN_CANDLES:
             return AnalysisResult(
                 direction=None,
                 score=0.0,
                 reasons=[
-                    "Недостаточно свечей."
+                    (
+                        "Недостаточно свечей: "
+                        f"{len(candles)}/{self.MIN_CANDLES}."
+                    )
                 ],
                 confirmations=0,
                 total_checks=0,
             )
-        # -------------------------------------------------
+        # =================================================
         # INDICATORS
-        # -------------------------------------------------
+        # =================================================
         try:
             indicators = calculate_indicators(
                 candles
             )
-        except Exception:
+        except Exception as exc:
             return AnalysisResult(
                 direction=None,
                 score=0.0,
                 reasons=[
-                    "Ошибка расчёта индикаторов."
+                    (
+                        "Ошибка расчёта "
+                        f"индикаторов: {exc}"
+                    )
                 ],
                 confirmations=0,
                 total_checks=0,
             )
-        # -------------------------------------------------
-        # ACCUMULATORS
-        # -------------------------------------------------
-        bullish_strength = 0.0
-        bearish_strength = 0.0
+        # =================================================
+        # COUNTERS
+        # =================================================
+        bullish_score = 0.0
+        bearish_score = 0.0
         bullish_confirmations = 0
         bearish_confirmations = 0
-        checks = 0
         reasons: list[str] = []
+        total_checks = 0
         # =================================================
         # EMA
         # =================================================
@@ -116,93 +101,29 @@ class SignalEngine:
             indicators.ema_fast is not None
             and indicators.ema_slow is not None
         ):
-            checks += 1
-            ema_fast = float(
+            total_checks += 1
+            if (
                 indicators.ema_fast
-            )
-            ema_slow = float(
-                indicators.ema_slow
-            )
-            # ---------------------------------------------
-            # BULLISH
-            # ---------------------------------------------
-            if ema_fast > ema_slow:
-                difference = abs(
-                    ema_fast - ema_slow
-                )
-                base_price = abs(
-                    float(
-                        indicators.price
-                    )
-                )
-                if base_price > 0:
-                    relative_difference = (
-                        difference
-                        / base_price
-                    )
-                else:
-                    relative_difference = 0.0
-                strength = min(
-                    1.0,
-                    max(
-                        0.20,
-                        relative_difference
-                        * 100.0,
-                    ),
-                )
-                bullish_strength += (
-                    strength
-                    * self.EMA_WEIGHT
-                )
-                if strength >= (
-                    self.MIN_INDICATOR_STRENGTH
-                ):
-                    bullish_confirmations += 1
+                > indicators.ema_slow
+            ):
+                bullish_score += self.EMA_WEIGHT
+                bullish_confirmations += 1
                 reasons.append(
                     (
                         "EMA: bullish "
-                        f"({strength * 100:.0f}%)"
+                        f"({self.EMA_WEIGHT:.0f}%)"
                     )
                 )
-            # ---------------------------------------------
-            # BEARISH
-            # ---------------------------------------------
-            elif ema_fast < ema_slow:
-                difference = abs(
-                    ema_fast - ema_slow
-                )
-                base_price = abs(
-                    float(
-                        indicators.price
-                    )
-                )
-                if base_price > 0:
-                    relative_difference = (
-                        difference
-                        / base_price
-                    )
-                else:
-                    relative_difference = 0.0
-                strength = min(
-                    1.0,
-                    max(
-                        0.20,
-                        relative_difference
-                        * 100.0,
-                    ),
-                )
-                bearish_strength += (
-                    strength
-                    * self.EMA_WEIGHT
-                )
-                if strength >= (
-                    self.MIN_INDICATOR_STRENGTH
-                ):
-                    bearish_confirmations += 1
+            elif (
+                indicators.ema_fast
+                < indicators.ema_slow
+            ):
+                bearish_score += self.EMA_WEIGHT
+                bearish_confirmations += 1
                 reasons.append(
                     (
                         "EMA: bearish "
-                        f"({strength * 100:.0f}%)"
+                        f"({self.EMA_WEIGHT:.0f}%)"
                     )
                 )
             else:
@@ -213,131 +134,33 @@ class SignalEngine:
         # RSI
         # =================================================
         if indicators.rsi is not None:
-            checks += 1
+            total_checks += 1
             rsi = float(
                 indicators.rsi
             )
-            # ---------------------------------------------
-            # STRONG OVERSOLD
-            # ---------------------------------------------
-            if rsi <= 30:
-                strength = min(
-                    1.0,
-                    max(
-                        0.0,
-                        (
-                            50.0 - rsi
-                        )
-                        / 20.0,
-                    ),
-                )
-                bullish_strength += (
-                    strength
-                    * self.RSI_WEIGHT
-                )
-                if strength >= (
-                    self.MIN_INDICATOR_STRENGTH
-                ):
-                    bullish_confirmations += 1
+            if rsi <= 35.0:
+                bullish_score += self.RSI_WEIGHT
+                bullish_confirmations += 1
                 reasons.append(
                     (
                         "RSI: oversold "
-                        f"({rsi:.1f})"
+                        f"({rsi:.1f}) "
+                        f"+{self.RSI_WEIGHT:.0f}%"
                     )
                 )
-            # ---------------------------------------------
-            # MODERATE OVERSOLD
-            # ---------------------------------------------
-            elif rsi < 40:
-                strength = (
-                    40.0 - rsi
-                ) / 20.0
-                strength = min(
-                    0.75,
-                    max(
-                        0.0,
-                        strength,
-                    ),
-                )
-                bullish_strength += (
-                    strength
-                    * self.RSI_WEIGHT
-                )
-                if strength >= (
-                    self.MIN_INDICATOR_STRENGTH
-                ):
-                    bullish_confirmations += 1
-                reasons.append(
-                    (
-                        "RSI: bullish zone "
-                        f"({rsi:.1f})"
-                    )
-                )
-            # ---------------------------------------------
-            # STRONG OVERBOUGHT
-            # ---------------------------------------------
-            elif rsi >= 70:
-                strength = min(
-                    1.0,
-                    max(
-                        0.0,
-                        (
-                            rsi - 50.0
-                        )
-                        / 20.0,
-                    ),
-                )
-                bearish_strength += (
-                    strength
-                    * self.RSI_WEIGHT
-                )
-                if strength >= (
-                    self.MIN_INDICATOR_STRENGTH
-                ):
-                    bearish_confirmations += 1
+            elif rsi >= 65.0:
+                bearish_score += self.RSI_WEIGHT
+                bearish_confirmations += 1
                 reasons.append(
                     (
                         "RSI: overbought "
-                        f"({rsi:.1f})"
+                        f"({rsi:.1f}) "
+                        f"+{self.RSI_WEIGHT:.0f}%"
                     )
                 )
-            # ---------------------------------------------
-            # MODERATE OVERBOUGHT
-            # ---------------------------------------------
-            elif rsi > 60:
-                strength = (
-                    rsi - 60.0
-                ) / 20.0
-                strength = min(
-                    0.75,
-                    max(
-                        0.0,
-                        strength,
-                    ),
-                )
-                bearish_strength += (
-                    strength
-                    * self.RSI_WEIGHT
-                )
-                if strength >= (
-                    self.MIN_INDICATOR_STRENGTH
-                ):
-                    bearish_confirmations += 1
-                reasons.append(
-                    (
-                        "RSI: bearish zone "
-                        f"({rsi:.1f})"
-                    )
-                )
-            # ---------------------------------------------
-            # NEUTRAL
-            # ---------------------------------------------
             else:
                 reasons.append(
-                    (
-                        "RSI: neutral "
-                        f"({rsi:.1f})"
-                    )
+                    f"RSI: neutral ({rsi:.1f})"
                 )
         # =================================================
         # MACD
@@ -346,84 +169,29 @@ class SignalEngine:
             indicators.macd is not None
             and indicators.macd_signal is not None
         ):
-            checks += 1
-            macd = float(
+            total_checks += 1
+            if (
                 indicators.macd
-            )
-            macd_signal = float(
-                indicators.macd_signal
-            )
-            difference = (
-                macd
-                - macd_signal
-            )
-            # ---------------------------------------------
-            # BULLISH
-            # ---------------------------------------------
-            if difference > 0:
-                # Нормализация силы.
-                #
-                # MACD может иметь очень маленькие значения,
-                # поэтому используем относительное отношение
-                # к величине самого MACD.
-                denominator = max(
-                    abs(macd_signal),
-                    1e-8,
-                )
-                relative = abs(
-                    difference
-                ) / denominator
-                strength = min(
-                    1.0,
-                    max(
-                        0.20,
-                        relative,
-                    ),
-                )
-                bullish_strength += (
-                    strength
-                    * self.MACD_WEIGHT
-                )
-                if strength >= (
-                    self.MIN_INDICATOR_STRENGTH
-                ):
-                    bullish_confirmations += 1
+                > indicators.macd_signal
+            ):
+                bullish_score += self.MACD_WEIGHT
+                bullish_confirmations += 1
                 reasons.append(
                     (
                         "MACD: bullish "
-                        f"({strength * 100:.0f}%)"
+                        f"({self.MACD_WEIGHT:.0f}%)"
                     )
                 )
-            # ---------------------------------------------
-            # BEARISH
-            # ---------------------------------------------
-            elif difference < 0:
-                denominator = max(
-                    abs(macd_signal),
-                    1e-8,
-                )
-                relative = abs(
-                    difference
-                ) / denominator
-                strength = min(
-                    1.0,
-                    max(
-                        0.20,
-                        relative,
-                    ),
-                )
-                bearish_strength += (
-                    strength
-                    * self.MACD_WEIGHT
-                )
-                if strength >= (
-                    self.MIN_INDICATOR_STRENGTH
-                ):
-                    bearish_confirmations += 1
+            elif (
+                indicators.macd
+                < indicators.macd_signal
+            ):
+                bearish_score += self.MACD_WEIGHT
+                bearish_confirmations += 1
                 reasons.append(
                     (
                         "MACD: bearish "
-                        f"({strength * 100:.0f}%)"
+                        f"({self.MACD_WEIGHT:.0f}%)"
                     )
                 )
             else:
@@ -431,15 +199,13 @@ class SignalEngine:
                     "MACD: neutral"
                 )
         # =================================================
-        # BOLLINGER BANDS
+        # BOLLINGER
         # =================================================
         if (
-            indicators.bollinger_upper
-            is not None
-            and indicators.bollinger_lower
-            is not None
+            indicators.bollinger_upper is not None
+            and indicators.bollinger_lower is not None
         ):
-            checks += 1
+            total_checks += 1
             price = float(
                 indicators.price
             )
@@ -449,156 +215,36 @@ class SignalEngine:
             lower = float(
                 indicators.bollinger_lower
             )
-            band_width = (
-                upper - lower
-            )
-            # Защита от деления на ноль.
-            if band_width <= 0:
-                reasons.append(
-                    "Bollinger: neutral"
+            if price <= lower:
+                bullish_score += (
+                    self.BOLLINGER_WEIGHT
                 )
-            # ---------------------------------------------
-            # BELOW LOWER BAND
-            # ---------------------------------------------
-            elif price <= lower:
-                distance = (
-                    lower - price
-                )
-                strength = min(
-                    1.0,
-                    max(
-                        0.25,
-                        distance
-                        / band_width
-                        * 4.0,
-                    ),
-                )
-                bullish_strength += (
-                    strength
-                    * self.BOLLINGER_WEIGHT
-                )
-                if strength >= (
-                    self.MIN_INDICATOR_STRENGTH
-                ):
-                    bullish_confirmations += 1
+                bullish_confirmations += 1
                 reasons.append(
                     (
                         "Bollinger: lower band "
-                        f"({strength * 100:.0f}%)"
+                        f"({self.BOLLINGER_WEIGHT:.0f}%)"
                     )
                 )
-            # ---------------------------------------------
-            # ABOVE UPPER BAND
-            # ---------------------------------------------
             elif price >= upper:
-                distance = (
-                    price - upper
+                bearish_score += (
+                    self.BOLLINGER_WEIGHT
                 )
-                strength = min(
-                    1.0,
-                    max(
-                        0.25,
-                        distance
-                        / band_width
-                        * 4.0,
-                    ),
-                )
-                bearish_strength += (
-                    strength
-                    * self.BOLLINGER_WEIGHT
-                )
-                if strength >= (
-                    self.MIN_INDICATOR_STRENGTH
-                ):
-                    bearish_confirmations += 1
+                bearish_confirmations += 1
                 reasons.append(
                     (
                         "Bollinger: upper band "
-                        f"({strength * 100:.0f}%)"
+                        f"({self.BOLLINGER_WEIGHT:.0f}%)"
                     )
                 )
-            # ---------------------------------------------
-            # INSIDE BANDS
-            # ---------------------------------------------
             else:
-                # Позиция цены внутри диапазона.
-                position = (
-                    price - lower
-                ) / band_width
-                # Нижняя половина диапазона
-                # слегка поддерживает UP.
-                if position < 0.40:
-                    strength = min(
-                        0.35,
-                        max(
-                            0.0,
-                            (
-                                0.50
-                                - position
-                            )
-                            * 0.7,
-                        ),
-                    )
-                    if strength > 0:
-                        bullish_strength += (
-                            strength
-                            * self.BOLLINGER_WEIGHT
-                        )
-                        if strength >= (
-                            self.MIN_INDICATOR_STRENGTH
-                        ):
-                            bullish_confirmations += 1
-                        reasons.append(
-                            (
-                                "Bollinger: "
-                                "lower-side bias"
-                            )
-                        )
-                    else:
-                        reasons.append(
-                            "Bollinger: neutral"
-                        )
-                # Верхняя половина диапазона
-                # слегка поддерживает DOWN.
-                elif position > 0.60:
-                    strength = min(
-                        0.35,
-                        max(
-                            0.0,
-                            (
-                                position
-                                - 0.50
-                            )
-                            * 0.7,
-                        ),
-                    )
-                    if strength > 0:
-                        bearish_strength += (
-                            strength
-                            * self.BOLLINGER_WEIGHT
-                        )
-                        if strength >= (
-                            self.MIN_INDICATOR_STRENGTH
-                        ):
-                            bearish_confirmations += 1
-                        reasons.append(
-                            (
-                                "Bollinger: "
-                                "upper-side bias"
-                            )
-                        )
-                    else:
-                        reasons.append(
-                            "Bollinger: neutral"
-                        )
-                else:
-                    reasons.append(
-                        "Bollinger: neutral"
-                    )
+                reasons.append(
+                    "Bollinger: neutral"
+                )
         # =================================================
-        # NO CHECKS
+        # NO INDICATORS
         # =================================================
-        if checks == 0:
+        if total_checks == 0:
             return AnalysisResult(
                 direction=None,
                 score=0.0,
@@ -609,169 +255,123 @@ class SignalEngine:
                 total_checks=0,
             )
         # =================================================
-        # TOTAL STRENGTH
+        # CONFLICT
         # =================================================
-        total_strength = (
-            bullish_strength
-            + bearish_strength
-        )
-        if total_strength <= 0:
+        if (
+            bullish_score == 0.0
+            and bearish_score == 0.0
+        ):
             return AnalysisResult(
                 direction=None,
                 score=0.0,
                 reasons=[
                     *reasons,
-                    "Нет направленного "
-                    "подтверждения.",
+                    "Нет направленных подтверждений.",
                 ],
                 confirmations=0,
-                total_checks=checks,
+                total_checks=total_checks,
             )
         # =================================================
-        # DIRECTION
+        # EQUAL SCORES
         # =================================================
         if (
-            bullish_strength
-            > bearish_strength
+            abs(
+                bullish_score
+                - bearish_score
+            )
+            < 0.000001
         ):
+            return AnalysisResult(
+                direction=None,
+                score=0.0,
+                reasons=[
+                    *reasons,
+                    "Индикаторы дают конфликтующий сигнал.",
+                ],
+                confirmations=0,
+                total_checks=total_checks,
+            )
+        # =================================================
+        # UP
+        # =================================================
+        if bullish_score > bearish_score:
             direction = Direction.UP
-            dominant_strength = (
-                bullish_strength
-            )
-            opposing_strength = (
-                bearish_strength
-            )
+            score = bullish_score
             confirmations = (
                 bullish_confirmations
             )
-        elif (
-            bearish_strength
-            > bullish_strength
-        ):
+            conflict_score = (
+                bearish_score
+            )
+            dominant_score = (
+                bullish_score
+            )
+        # =================================================
+        # DOWN
+        # =================================================
+        else:
             direction = Direction.DOWN
-            dominant_strength = (
-                bearish_strength
-            )
-            opposing_strength = (
-                bullish_strength
-            )
+            score = bearish_score
             confirmations = (
                 bearish_confirmations
             )
+            conflict_score = (
+                bullish_score
+            )
+            dominant_score = (
+                bearish_score
+            )
+        # =================================================
+        # DIRECTION STRENGTH
+        # =================================================
+        direction_strength = (
+            dominant_score / 100.0
+        )
+        # =================================================
+        # ADVANTAGE
+        # =================================================
+        total_direction_score = (
+            dominant_score
+            + conflict_score
+        )
+        if total_direction_score > 0:
+            advantage = (
+                dominant_score
+                / total_direction_score
+                * 100.0
+            )
         else:
-            return AnalysisResult(
-                direction=None,
-                score=0.0,
-                reasons=[
-                    *reasons,
-                    "Индикаторы дают "
-                    "конфликтующий сигнал.",
-                ],
-                confirmations=0,
-                total_checks=checks,
-            )
+            advantage = 0.0
         # =================================================
-        # DIRECTION ADVANTAGE
-        # =================================================
-        direction_advantage = (
-            dominant_strength
-            - opposing_strength
-        )
-        normalized_advantage = (
-            direction_advantage
-            / max(
-                dominant_strength,
-                1e-8,
-            )
-        )
-        # =================================================
-        # TOO MUCH CONFLICT
-        # =================================================
-        if (
-            normalized_advantage
-            < self.MIN_DIRECTION_ADVANTAGE
-        ):
-            return AnalysisResult(
-                direction=None,
-                score=0.0,
-                reasons=[
-                    *reasons,
-                    (
-                        "Недостаточное "
-                        "преимущество направления."
-                    ),
-                ],
-                confirmations=0,
-                total_checks=checks,
-            )
-        # =================================================
-        # SCORE
-        # =================================================
-        #
-        # Сила доминирующего направления.
-        #
-        maximum_possible = (
-            self.EMA_WEIGHT
-            + self.RSI_WEIGHT
-            + self.MACD_WEIGHT
-            + self.BOLLINGER_WEIGHT
-        )
-        strength_ratio = (
-            dominant_strength
-            / maximum_possible
-        )
-        strength_score = (
-            strength_ratio
-            * 100.0
-        )
-        #
-        # Бонус за отсутствие сильного конфликта.
-        #
-        agreement_score = (
-            normalized_advantage
-            * 20.0
-        )
-        #
-        # Финальный score.
-        #
-        score = min(
-            100.0,
-            max(
-                0.0,
-                strength_score
-                + agreement_score,
-            ),
-        )
-        # =================================================
-        # FINAL REASONS
+        # REASONS
         # =================================================
         reasons.append(
             (
-                f"Итоговое направление: "
-                f"{'UP' if direction == Direction.UP else 'DOWN'}"
+                "Итоговое направление: "
+                f"{direction.value}"
             )
         )
         reasons.append(
             (
-                f"Сила направления: "
-                f"{dominant_strength:.2f}"
+                "Сила направления: "
+                f"{direction_strength:.2f}"
             )
         )
         reasons.append(
             (
-                f"Конфликтующая сила: "
-                f"{opposing_strength:.2f}"
+                "Конфликтующая сила: "
+                f"{conflict_score / 100.0:.2f}"
             )
         )
         reasons.append(
             (
-                f"Преимущество направления: "
-                f"{normalized_advantage * 100:.1f}%"
+                "Преимущество направления: "
+                f"{advantage:.1f}%"
             )
         )
         reasons.append(
             (
-                f"Итоговый score: "
+                "Итоговый score: "
                 f"{score:.1f}%"
             )
         )
@@ -780,13 +380,19 @@ class SignalEngine:
         # =================================================
         return AnalysisResult(
             direction=direction,
-            score=score,
+            score=min(
+                100.0,
+                max(
+                    0.0,
+                    score,
+                ),
+            ),
             reasons=reasons,
             confirmations=confirmations,
-            total_checks=checks,
+            total_checks=total_checks,
         )
 # =========================================================
-# GLOBAL ENGINE
+# SINGLETON
 # =========================================================
 signal_engine = SignalEngine()
 # =========================================================
