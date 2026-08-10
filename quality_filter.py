@@ -3,12 +3,13 @@ import logging
 from dataclasses import dataclass
 from market import Candle
 from models import Direction
-from signal_engine import (
-    signal_engine,
-)
+from signal_engine import signal_engine
 logger = logging.getLogger(
     "quality_filter"
 )
+# =========================================================
+# DATA MODELS
+# =========================================================
 @dataclass(slots=True)
 class TimeframeAnalysis:
     timeframe: str
@@ -27,10 +28,22 @@ class QualityResult:
     timeframe_results: list[
         TimeframeAnalysis
     ]
+# =========================================================
+# TIMEFRAME ANALYSIS
+# =========================================================
 def analyze_timeframe(
     timeframe: str,
     candles: list[Candle],
 ) -> TimeframeAnalysis:
+    """
+    Анализирует один таймфрейм через signal_engine.
+    Важно:
+    - не изменяет candles;
+    - полностью сохраняет score signal_engine;
+    - сохраняет исходные reasons;
+    - direction=None считается конфликтующим
+      / неподтверждённым таймфреймом.
+    """
     result = signal_engine.analyze(
         candles
     )
@@ -50,16 +63,104 @@ def analyze_timeframe(
         timeframe=timeframe,
         direction=result.direction,
         score=result.score,
-        reasons=result.reasons,
+        reasons=list(result.reasons),
     )
+# =========================================================
+# QUALITY FILTER
+# =========================================================
 class QualityFilter:
+    """
+    Фильтр качества торгового сигнала.
+    Основная задача:
+    1. Проверить таймфреймы.
+    2. Найти единое направление.
+    3. Посчитать количество подтверждений.
+    4. Рассчитать итоговое качество.
+    5. Отбросить слабые/конфликтующие сигналы.
+    =====================================================
+    НОВАЯ МОДЕЛЬ QUALITY SCORE
+    =====================================================
+    Старый вариант:
+        average_score + agreement_bonus
+    приводил к ситуации:
+        50 + 10 = 60
+    даже когда два таймфрейма полностью
+    подтверждали одно направление.
+    Теперь итоговая оценка учитывает:
+        1. качество самих подтверждающих TF;
+        2. долю согласных TF;
+        3. количество подтверждений;
+        4. наличие полного согласования.
+    Это позволяет нормальным согласованным
+    сигналам проходить фильтр, но не пропускает
+    одиночный слабый сигнал.
+    """
     def __init__(
         self,
-        minimum_quality: float = 85.0,
-    ):
-        self.minimum_quality = (
+        minimum_quality: float = 70.0,
+        minimum_confirmations: int = 2,
+    ) -> None:
+        self.minimum_quality = float(
             minimum_quality
         )
+        self.minimum_confirmations = max(
+            1,
+            int(minimum_confirmations),
+        )
+    # =====================================================
+    # QUALITY SCORE
+    # =====================================================
+    @staticmethod
+    def _calculate_quality(
+        average_score: float,
+        confirmations: int,
+        total_valid: int,
+    ) -> float:
+        """
+        Рассчитывает итоговое качество.
+        Базой является средний score подтверждающих
+        таймфреймов.
+        Затем добавляется бонус за согласованность.
+        Максимальный bonus = 30%.
+        Примеры:
+            2/3 подтверждения:
+                bonus = 20
+            3/3 подтверждения:
+                bonus = 30
+        Таким образом:
+            50 + 20 = 70
+            50 + 30 = 80
+        Более сильный signal_engine score:
+            70 + 20 = 90
+        Это значительно логичнее старой схемы,
+        где максимальный bonus составлял всего 10%.
+        """
+        if total_valid <= 0:
+            return 0.0
+        average_score = max(
+            0.0,
+            min(
+                100.0,
+                float(average_score),
+            ),
+        )
+        agreement_ratio = (
+            confirmations
+            / total_valid
+        )
+        # До 30 баллов за согласованность.
+        agreement_bonus = (
+            agreement_ratio * 30.0
+        )
+        quality_score = min(
+            100.0,
+            average_score
+            + agreement_bonus,
+        )
+        return quality_score
+    # =====================================================
+    # EVALUATE
+    # =====================================================
     def evaluate(
         self,
         analyses: list[
@@ -72,6 +173,26 @@ class QualityFilter:
             "Timeframes=%s",
             len(analyses),
         )
+        # =================================================
+        # EMPTY INPUT
+        # =================================================
+        if not analyses:
+            logger.info(
+                "Quality rejected: "
+                "no timeframe analyses."
+            )
+            return QualityResult(
+                accepted=False,
+                direction=None,
+                quality_score=0.0,
+                confirmations=0,
+                total_checks=0,
+                reasons=[],
+                rejected_reasons=[
+                    "Нет данных для анализа таймфреймов."
+                ],
+                timeframe_results=[],
+            )
         # =================================================
         # VALID TIMEFRAMES
         # =================================================
@@ -158,14 +279,20 @@ class QualityFilter:
         # =================================================
         # MINIMUM CONFIRMATIONS
         # =================================================
-        if confirmations < 2:
+        if confirmations < (
+            self.minimum_confirmations
+        ):
             rejected.append(
                 "Недостаточно подтверждений "
                 "по таймфреймам."
             )
             logger.info(
-                "Rejected: confirmations=%s < 2",
+                (
+                    "Rejected: confirmations=%s "
+                    "< minimum=%s"
+                ),
                 confirmations,
+                self.minimum_confirmations,
             )
         # =================================================
         # SELECT MATCHING TIMEFRAMES
@@ -203,30 +330,39 @@ class QualityFilter:
             / len(selected)
         )
         # =================================================
+        # AGREEMENT RATIO
+        # =================================================
+        agreement_ratio = (
+            confirmations
+            / len(valid)
+        )
+        # =================================================
         # AGREEMENT BONUS
         # =================================================
         agreement_bonus = (
-            confirmations
-            / len(valid)
-            * 10
+            agreement_ratio * 30.0
         )
         # =================================================
         # FINAL QUALITY
         # =================================================
-        quality_score = min(
-            100.0,
-            average_score
-            + agreement_bonus,
+        quality_score = (
+            self._calculate_quality(
+                average_score=average_score,
+                confirmations=confirmations,
+                total_valid=len(valid),
+            )
         )
         logger.info(
             (
                 "Quality calculation: "
                 "average=%.2f | "
+                "agreement=%.2f%% | "
                 "bonus=%.2f | "
                 "final=%.2f | "
                 "minimum=%.2f"
             ),
             average_score,
+            agreement_ratio * 100.0,
             agreement_bonus,
             quality_score,
             self.minimum_quality,
@@ -258,6 +394,12 @@ class QualityFilter:
             reasons.extend(
                 item.reasons
             )
+        # Удаляем дубликаты, сохраняя порядок.
+        reasons = list(
+            dict.fromkeys(
+                reasons
+            )
+        )
         # =================================================
         # RESULT
         # =================================================
@@ -299,6 +441,20 @@ class QualityFilter:
             rejected_reasons=rejected,
             timeframe_results=analyses,
         )
+# =========================================================
+# DEFAULT QUALITY FILTER
+# =========================================================
 quality_filter = QualityFilter(
-    minimum_quality=85.0
+    minimum_quality=70.0,
+    minimum_confirmations=2,
 )
+# =========================================================
+# EXPORTS
+# =========================================================
+__all__ = [
+    "TimeframeAnalysis",
+    "QualityResult",
+    "QualityFilter",
+    "analyze_timeframe",
+    "quality_filter",
+]
