@@ -1,11 +1,13 @@
 from __future__ import annotations
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from fastapi import FastAPI
+import uvicorn
 from config import (
     BOT_TOKEN,
     HOST,
@@ -37,6 +39,54 @@ logging.basicConfig(
     ),
 )
 logger = logging.getLogger("main")
+# ============================================================
+# RENDER PORT
+# ============================================================
+#
+# Render Web Service передаёт порт через переменную окружения
+# PORT.
+#
+# Например:
+#
+# PORT=10000
+#
+# Поэтому НЕ полагаемся только на PORT из config.py.
+#
+def get_render_port() -> int:
+    raw_port = os.getenv("PORT")
+    if raw_port is None:
+        # Локальный запуск.
+        try:
+            return int(PORT)
+        except (TypeError, ValueError):
+            return 10000
+    try:
+        port = int(raw_port)
+    except ValueError:
+        logger.warning(
+            "Invalid PORT environment variable: %r. "
+            "Using 10000.",
+            raw_port,
+        )
+        return 10000
+    if not 1 <= port <= 65535:
+        logger.warning(
+            "PORT is outside valid range: %s. "
+            "Using 10000.",
+            port,
+        )
+        return 10000
+    return port
+RENDER_HOST = os.getenv(
+    "HOST",
+    HOST or "0.0.0.0",
+)
+RENDER_PORT = get_render_port()
+logger.info(
+    "HTTP server configuration: host=%s port=%s",
+    RENDER_HOST,
+    RENDER_PORT,
+)
 # ============================================================
 # TELEGRAM BOT
 # ============================================================
@@ -121,7 +171,9 @@ async def bot_polling() -> None:
         )
         await dp.start_polling(
             bot,
-            allowed_updates=dp.resolve_used_update_types(),
+            allowed_updates=(
+                dp.resolve_used_update_types()
+            ),
         )
     except asyncio.CancelledError:
         logger.info(
@@ -219,7 +271,7 @@ async def lifespan(
     logger.info(
         "Telegram bot task created."
     )
-    # Небольшая пауза позволяет увидеть ошибки
+    # Небольшая пауза позволяет увидеть возможную ошибку
     # запуска polling в логах.
     await asyncio.sleep(0.2)
     logger.info(
@@ -234,6 +286,11 @@ async def lifespan(
     logger.info(
         "Automatic signal scanner is running "
         "through Scheduler."
+    )
+    logger.info(
+        "HTTP server is running on %s:%s",
+        RENDER_HOST,
+        RENDER_PORT,
     )
     logger.info(
         "========================================"
@@ -346,15 +403,18 @@ app = FastAPI(
 # ============================================================
 @app.get("/")
 async def root():
+    telegram_status = (
+        "running"
+        if bot_task is not None
+        and not bot_task.done()
+        else "stopped"
+    )
     return {
         "status": "ok",
         "service": "TEYZUS",
-        "telegram": (
-            "running"
-            if bot_task is not None
-            and not bot_task.done()
-            else "stopped"
-        ),
+        "telegram": telegram_status,
+        "host": RENDER_HOST,
+        "port": RENDER_PORT,
     }
 # ============================================================
 # HEALTH
@@ -371,6 +431,8 @@ async def health():
         "status": "healthy",
         "service": "TEYZUS",
         "telegram": telegram_status,
+        "host": RENDER_HOST,
+        "port": RENDER_PORT,
     }
 # ============================================================
 # API STATUS
@@ -392,15 +454,24 @@ async def api_status():
         "status": "running",
         "service": "TEYZUS",
         "telegram": telegram_status,
+        "host": RENDER_HOST,
+        "port": RENDER_PORT,
     }
 # ============================================================
-# LOCAL START
+# LOCAL / RENDER START
 # ============================================================
 if __name__ == "__main__":
-    import uvicorn
+    logger.info(
+        "Starting Uvicorn..."
+    )
+    logger.info(
+        "Binding HTTP server to %s:%s",
+        RENDER_HOST,
+        RENDER_PORT,
+    )
     uvicorn.run(
         app,
-        host=HOST,
-        port=PORT,
+        host=RENDER_HOST,
+        port=RENDER_PORT,
         reload=False,
     )
