@@ -14,6 +14,12 @@ class MarketDataError(Exception):
     """Ошибка получения или обработки рыночных данных."""
 class MarketRateLimitError(MarketDataError):
     """API временно ограничил количество запросов."""
+class MarketDailyLimitError(MarketRateLimitError):
+    """
+    Дневной лимит API исчерпан.
+    После такой ошибки провайдер блокирует новые запросы
+    до следующего UTC-дня или до ручного сброса cooldown.
+    """
 # =========================================================
 # DATA MODELS
 # =========================================================
@@ -64,14 +70,16 @@ class HTTPMarketProvider(MarketProvider):
     """
     Twelve Data HTTP provider.
     Основные возможности:
-    - cache свечей;
-    - разный TTL для разных TF;
-    - deduplication одинаковых запросов;
+    - многоуровневый cache;
+    - TTL по timeframe;
+    - request deduplication;
     - локальный rate limiter;
+    - защита от дневного лимита;
     - cooldown после 429;
-    - stale cache при временной ошибке;
-    - безопасный парсинг Twelve Data;
-    - сохранение совместимости с MarketClient.
+    - stale cache;
+    - безопасный JSON parsing;
+    - защита от одновременных одинаковых запросов;
+    - совместимость с MarketClient.
     """
     def __init__(
         self,
@@ -79,7 +87,8 @@ class HTTPMarketProvider(MarketProvider):
         api_key: str | None = None,
         timeout: int = 15,
         cache_ttl: float = 15.0,
-        max_requests_per_minute: int = 7,
+        max_requests_per_minute: int = 5,
+        daily_request_limit: int = 760,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = (
@@ -95,9 +104,26 @@ class HTTPMarketProvider(MarketProvider):
             5.0,
             float(cache_ttl),
         )
+        # Не позволяем конфигурации случайно
+        # создавать слишком много запросов.
         self.max_requests_per_minute = max(
             1,
-            int(max_requests_per_minute),
+            min(
+                int(max_requests_per_minute),
+                10,
+            ),
+        )
+        # Это не точный лимит Twelve Data,
+        # а внутренний safety limit.
+        #
+        # Например:
+        # Twelve Data = 800/day
+        # наш safety limit = 760/day
+        #
+        # Оставляем небольшой запас.
+        self.daily_request_limit = max(
+            100,
+            int(daily_request_limit),
         )
         # =================================================
         # CACHE
@@ -122,12 +148,28 @@ class HTTPMarketProvider(MarketProvider):
         self._rate_limit_lock = asyncio.Lock()
         self._rate_limited_until: float = 0.0
         # =================================================
+        # DAILY LIMIT
+        # =================================================
+        self._daily_request_count: int = 0
+        self._daily_counter_date: str = (
+            self._utc_date_key()
+        )
+        self._daily_limit_until: float = 0.0
+        # =================================================
         # HTTP
         # =================================================
         self.session: (
             aiohttp.ClientSession | None
         ) = None
         self._started = False
+    # =====================================================
+    # UTC DATE
+    # =====================================================
+    @staticmethod
+    def _utc_date_key() -> str:
+        return datetime.now(
+            timezone.utc
+        ).strftime("%Y-%m-%d")
     # =====================================================
     # START
     # =====================================================
@@ -143,6 +185,12 @@ class HTTPMarketProvider(MarketProvider):
         self._started = True
         logger.info(
             "HTTP market provider started."
+        )
+        logger.info(
+            "Market limits: %s requests/minute, "
+            "%s safety requests/day.",
+            self.max_requests_per_minute,
+            self.daily_request_limit,
         )
         if not self.api_key:
             logger.warning(
@@ -163,6 +211,8 @@ class HTTPMarketProvider(MarketProvider):
         async with self._rate_limit_lock:
             self._request_timestamps.clear()
             self._rate_limited_until = 0.0
+        self._daily_request_count = 0
+        self._daily_limit_until = 0.0
         logger.info(
             "HTTP market provider closed."
         )
@@ -254,7 +304,7 @@ class HTTPMarketProvider(MarketProvider):
         if normalized == "1min":
             return max(
                 self.cache_ttl,
-                30.0,
+                45.0,
             )
         # -------------------------------------------------
         # 5 MINUTES
@@ -262,7 +312,7 @@ class HTTPMarketProvider(MarketProvider):
         if normalized == "5min":
             return max(
                 self.cache_ttl,
-                60.0,
+                90.0,
             )
         # -------------------------------------------------
         # 15 MINUTES
@@ -270,10 +320,10 @@ class HTTPMarketProvider(MarketProvider):
         if normalized == "15min":
             return max(
                 self.cache_ttl,
-                120.0,
+                180.0,
             )
         # -------------------------------------------------
-        # 30/45
+        # 30 / 45
         # -------------------------------------------------
         if normalized in {
             "30min",
@@ -281,7 +331,7 @@ class HTTPMarketProvider(MarketProvider):
         }:
             return max(
                 self.cache_ttl,
-                180.0,
+                300.0,
             )
         # -------------------------------------------------
         # HOURS
@@ -294,7 +344,7 @@ class HTTPMarketProvider(MarketProvider):
         }:
             return max(
                 self.cache_ttl,
-                300.0,
+                600.0,
             )
         # -------------------------------------------------
         # DAYS
@@ -306,11 +356,11 @@ class HTTPMarketProvider(MarketProvider):
         }:
             return max(
                 self.cache_ttl,
-                600.0,
+                1200.0,
             )
         return max(
             self.cache_ttl,
-            60.0,
+            120.0,
         )
     # =====================================================
     # CACHE KEY
@@ -393,10 +443,93 @@ class HTTPMarketProvider(MarketProvider):
         border = now - 60.0
         self._request_timestamps = [
             timestamp
-            for timestamp
-            in self._request_timestamps
+            for timestamp in self._request_timestamps
             if timestamp > border
         ]
+    # =====================================================
+    # DAILY COUNTER
+    # =====================================================
+    async def _refresh_daily_counter(
+        self,
+    ) -> None:
+        current_date = self._utc_date_key()
+        if current_date != self._daily_counter_date:
+            self._daily_counter_date = (
+                current_date
+            )
+            self._daily_request_count = 0
+            self._daily_limit_until = 0.0
+            logger.info(
+                "Daily market API counter reset."
+            )
+    # =====================================================
+    # DAILY LIMIT CHECK
+    # =====================================================
+    async def _check_daily_limit(
+        self,
+    ) -> None:
+        await self._refresh_daily_counter()
+        now = time.monotonic()
+        if (
+            now
+            < self._daily_limit_until
+        ):
+            raise MarketDailyLimitError(
+                "Market API daily limit "
+                "cooldown is active."
+            )
+        if (
+            self._daily_request_count
+            >= self.daily_request_limit
+        ):
+            # До следующего UTC дня.
+            tomorrow = (
+                datetime.now(
+                    timezone.utc
+                )
+                .replace(
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+                .timestamp()
+                + 86400
+            )
+            seconds_until_reset = max(
+                60.0,
+                tomorrow
+                - time.time(),
+            )
+            self._daily_limit_until = (
+                now
+                + seconds_until_reset
+            )
+            logger.error(
+                "Internal daily market API "
+                "safety limit reached: %s/%s. "
+                "New API requests disabled "
+                "until next UTC day.",
+                self._daily_request_count,
+                self.daily_request_limit,
+            )
+            raise MarketDailyLimitError(
+                "Internal daily market API "
+                "safety limit reached."
+            )
+    # =====================================================
+    # REGISTER REQUEST
+    # =====================================================
+    async def _register_request(
+        self,
+    ) -> None:
+        await self._check_daily_limit()
+        self._daily_request_count += 1
+        logger.debug(
+            "Market API request counter: %s/%s",
+            self._daily_request_count,
+            self.daily_request_limit,
+        )
     # =====================================================
     # RATE LIMIT WAIT
     # =====================================================
@@ -407,9 +540,20 @@ class HTTPMarketProvider(MarketProvider):
             async with self._rate_limit_lock:
                 now = time.monotonic()
                 # -------------------------------------------------
-                # GLOBAL COOLDOWN
+                # DAILY LIMIT COOLDOWN
                 # -------------------------------------------------
                 if (
+                    now
+                    < self._daily_limit_until
+                ):
+                    wait_for = (
+                        self._daily_limit_until
+                        - now
+                    )
+                # -------------------------------------------------
+                # NORMAL API COOLDOWN
+                # -------------------------------------------------
+                elif (
                     now
                     < self._rate_limited_until
                 ):
@@ -444,6 +588,20 @@ class HTTPMarketProvider(MarketProvider):
                             - oldest
                         ),
                     )
+            # -------------------------------------------------
+            # DO NOT SLEEP FOR A WHOLE DAY
+            #
+            # Если дневной cooldown активен,
+            # вызывающая функция получит ошибку
+            # через _check_daily_limit().
+            # -------------------------------------------------
+            if (
+                wait_for
+                >= 3600
+            ):
+                raise MarketDailyLimitError(
+                    "Market API daily cooldown active."
+                )
             logger.warning(
                 "Market API rate limiter "
                 "waiting %.1f seconds.",
@@ -453,7 +611,7 @@ class HTTPMarketProvider(MarketProvider):
                 wait_for
             )
     # =====================================================
-    # REGISTER RATE LIMIT
+    # REGISTER 429
     # =====================================================
     async def _register_rate_limit(
         self,
@@ -468,6 +626,41 @@ class HTTPMarketProvider(MarketProvider):
                     cooldown,
                 ),
             )
+    # =====================================================
+    # REGISTER DAILY LIMIT
+    # =====================================================
+    async def _register_daily_limit(
+        self,
+    ) -> None:
+        now = time.monotonic()
+        tomorrow = (
+            datetime.now(
+                timezone.utc
+            )
+            .replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+            .timestamp()
+            + 86400
+        )
+        seconds_until_reset = max(
+            60.0,
+            tomorrow
+            - time.time(),
+        )
+        self._daily_limit_until = (
+            now
+            + seconds_until_reset
+        )
+        logger.error(
+            "Twelve Data daily API limit "
+            "reached. New market requests "
+            "disabled for %.1f hours.",
+            seconds_until_reset / 3600.0,
+        )
     # =====================================================
     # BUILD PARAMS
     # =====================================================
@@ -523,9 +716,11 @@ class HTTPMarketProvider(MarketProvider):
         # =================================================
         # 1. FRESH CACHE
         # =================================================
-        cached = await self._get_cached_candles(
-            key,
-            allow_expired=False,
+        cached = (
+            await self._get_cached_candles(
+                key,
+                allow_expired=False,
+            )
         )
         if cached is not None:
             logger.debug(
@@ -545,7 +740,8 @@ class HTTPMarketProvider(MarketProvider):
         )
         async with request_lock:
             # -------------------------------------------------
-            # Another coroutine may have already loaded data.
+            # Another coroutine may have loaded
+            # the same data.
             # -------------------------------------------------
             cached = (
                 await self._get_cached_candles(
@@ -562,7 +758,29 @@ class HTTPMarketProvider(MarketProvider):
                 )
                 return cached
             # =================================================
-            # 3. BUILD REQUEST
+            # 3. CHECK DAILY LIMIT BEFORE API REQUEST
+            # =================================================
+            try:
+                await self._check_daily_limit()
+            except MarketDailyLimitError:
+                stale = (
+                    await self._get_cached_candles(
+                        key,
+                        allow_expired=True,
+                    )
+                )
+                if stale is not None:
+                    logger.warning(
+                        "DAILY LIMIT | "
+                        "%s | %s | "
+                        "USING STALE CACHE",
+                        normalized_symbol,
+                        normalized_timeframe,
+                    )
+                    return stale
+                raise
+            # =================================================
+            # 4. BUILD REQUEST
             # =================================================
             params = self._build_params(
                 normalized_symbol,
@@ -570,9 +788,54 @@ class HTTPMarketProvider(MarketProvider):
                 limit,
             )
             # =================================================
-            # 4. RATE LIMIT
+            # 5. RATE LIMIT
             # =================================================
-            await self._wait_for_rate_limit_slot()
+            try:
+                await (
+                    self._wait_for_rate_limit_slot()
+                )
+            except MarketDailyLimitError:
+                stale = (
+                    await self._get_cached_candles(
+                        key,
+                        allow_expired=True,
+                    )
+                )
+                if stale is not None:
+                    logger.warning(
+                        "DAILY COOLDOWN | "
+                        "%s | %s | "
+                        "USING STALE CACHE",
+                        normalized_symbol,
+                        normalized_timeframe,
+                    )
+                    return stale
+                raise
+            # =================================================
+            # 6. REGISTER API REQUEST
+            # =================================================
+            try:
+                await self._register_request()
+            except MarketDailyLimitError:
+                stale = (
+                    await self._get_cached_candles(
+                        key,
+                        allow_expired=True,
+                    )
+                )
+                if stale is not None:
+                    logger.warning(
+                        "DAILY SAFETY LIMIT | "
+                        "%s | %s | "
+                        "USING STALE CACHE",
+                        normalized_symbol,
+                        normalized_timeframe,
+                    )
+                    return stale
+                raise
+            # =================================================
+            # 7. HTTP REQUEST
+            # =================================================
             try:
                 async with self.session.get(
                     self.base_url,
@@ -602,7 +865,7 @@ class HTTPMarketProvider(MarketProvider):
                         )
                         if stale is not None:
                             logger.warning(
-                                "RATE LIMIT | "
+                                "HTTP 429 | "
                                 "%s | %s | "
                                 "USING STALE CACHE",
                                 normalized_symbol,
@@ -704,7 +967,7 @@ class HTTPMarketProvider(MarketProvider):
                     f"{exc}"
                 ) from exc
             # =================================================
-            # 5. TWELVE DATA JSON ERROR
+            # 8. TWELVE DATA JSON ERROR
             # =================================================
             if isinstance(data, dict):
                 status = str(
@@ -722,10 +985,21 @@ class HTTPMarketProvider(MarketProvider):
                         "message",
                         "Unknown Twelve Data error.",
                     )
-                    if str(code) == "429":
-                        await self._register_rate_limit(
-                            60.0
-                        )
+                    # -------------------------------------------------
+                    # DAILY LIMIT
+                    # -------------------------------------------------
+                    message_lower = str(
+                        message
+                    ).lower()
+                    is_daily_limit = (
+                        str(code) == "429"
+                        or "run out of api credits"
+                        in message_lower
+                        or "daily" in message_lower
+                        and "limit" in message_lower
+                    )
+                    if is_daily_limit:
+                        await self._register_daily_limit()
                         stale = (
                             await self._get_cached_candles(
                                 key,
@@ -734,17 +1008,20 @@ class HTTPMarketProvider(MarketProvider):
                         )
                         if stale is not None:
                             logger.warning(
-                                "TWELVE DATA RATE LIMIT | "
+                                "TWELVE DATA DAILY LIMIT | "
                                 "%s | %s | "
                                 "USING STALE CACHE",
                                 normalized_symbol,
                                 normalized_timeframe,
                             )
                             return stale
-                        raise MarketRateLimitError(
-                            "Twelve Data rate limit: "
+                        raise MarketDailyLimitError(
+                            "Twelve Data daily limit: "
                             f"{message}"
                         )
+                    # -------------------------------------------------
+                    # NORMAL API ERROR
+                    # -------------------------------------------------
                     stale = (
                         await self._get_cached_candles(
                             key,
@@ -767,13 +1044,31 @@ class HTTPMarketProvider(MarketProvider):
                         f"{code}: {message}"
                     )
             # =================================================
-            # 6. PARSE
+            # 9. PARSE
             # =================================================
-            candles = self._parse_candles(
-                data
-            )
+            try:
+                candles = self._parse_candles(
+                    data
+                )
+            except MarketDataError:
+                stale = (
+                    await self._get_cached_candles(
+                        key,
+                        allow_expired=True,
+                    )
+                )
+                if stale is not None:
+                    logger.warning(
+                        "PARSE ERROR | "
+                        "%s | %s | "
+                        "USING STALE CACHE",
+                        normalized_symbol,
+                        normalized_timeframe,
+                    )
+                    return stale
+                raise
             # =================================================
-            # 7. SAVE
+            # 10. SAVE CACHE
             # =================================================
             ttl = self._get_cache_ttl(
                 normalized_timeframe
@@ -1243,6 +1538,7 @@ __all__ = [
     "Quote",
     "MarketDataError",
     "MarketRateLimitError",
+    "MarketDailyLimitError",
     "MarketProvider",
     "HTTPMarketProvider",
     "MarketClient",
