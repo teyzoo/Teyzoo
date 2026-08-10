@@ -1,3 +1,5 @@
+Полный scheduler.py:
+
 from __future__ import annotations
 import asyncio
 import importlib
@@ -11,6 +13,13 @@ from result_checker import (
 )
 from signal_warning.scheduler import (
     warning_scheduler,
+)
+from signal_scanner import (
+    SignalScanner,
+    TradingSignal,
+)
+from config import (
+    OWNER_ID,
 )
 logger = logging.getLogger(
     "scheduler"
@@ -55,8 +64,6 @@ def _load_generator(
        SignalGenerator(market)
        с методом:
        generate(bot)
-    Текущий signal_generator.py TEYZUS
-    использует именно второй вариант.
     """
     for module_name in GENERATOR_MODULES:
         try:
@@ -73,7 +80,7 @@ def _load_generator(
             continue
         # =================================================
         # ВАРИАНТ 1
-        # Обычная функция
+        # ОБЫЧНАЯ ФУНКЦИЯ
         # =================================================
         for function_name in GENERATOR_FUNCTIONS:
             function = getattr(
@@ -94,7 +101,7 @@ def _load_generator(
             return function
         # =================================================
         # ВАРИАНТ 2
-        # SignalGenerator
+        # SIGNAL GENERATOR
         # =================================================
         generator_class = getattr(
             module,
@@ -108,7 +115,7 @@ def _load_generator(
             module_name,
         )
         # -------------------------------------------------
-        # Создаём экземпляр
+        # СОЗДАЁМ ЭКЗЕМПЛЯР
         # -------------------------------------------------
         try:
             instance = generator_class(
@@ -134,7 +141,7 @@ def _load_generator(
             )
             continue
         # -------------------------------------------------
-        # Ищем generate
+        # ИЩЕМ GENERATE
         # -------------------------------------------------
         generate_method = getattr(
             instance,
@@ -149,7 +156,7 @@ def _load_generator(
             )
             return generate_method
         # -------------------------------------------------
-        # Дополнительные варианты методов
+        # ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ
         # -------------------------------------------------
         for method_name in GENERATOR_FUNCTIONS:
             method = getattr(
@@ -171,11 +178,13 @@ def _load_generator(
 # =========================================================
 def _get_analysis_interval() -> int:
     """
-    Получает задержку между анализами.
+    Старый цикл генератора.
+    Оставлен специально, чтобы не удалить
+    существующий функционал проекта.
     Основная переменная:
         SIGNAL_ANALYSIS_INTERVAL
-    Если её нет или значение неправильное,
-    используется 20 секунд.
+    По умолчанию:
+        20 секунд
     """
     try:
         from config import (
@@ -203,20 +212,6 @@ async def _call_generator(
     bot: Bot,
     market: MarketClient,
 ) -> Any:
-    """
-    Универсальный запуск генератора.
-    Поддерживает:
-        generate()
-        generate(bot)
-        generate(market)
-        generate(bot, market)
-    Для текущего:
-        SignalGenerator.generate(bot)
-    будет передан bot.
-    """
-    # -----------------------------------------------------
-    # Получаем сигнатуру
-    # -----------------------------------------------------
     try:
         signature = inspect.signature(
             generator
@@ -232,52 +227,30 @@ async def _call_generator(
     if inspect.iscoroutinefunction(
         generator
     ):
-        # -------------------------------------------------
-        # 0 аргументов
-        # -------------------------------------------------
         if len(parameters) == 0:
             return await generator()
-        # -------------------------------------------------
-        # 1 аргумент
-        # -------------------------------------------------
         if len(parameters) == 1:
             parameter_name = (
                 parameters[0]
                 .name
                 .lower()
             )
-            # generate(bot)
-            if (
-                "bot"
-                in parameter_name
-            ):
+            if "bot" in parameter_name:
                 return await generator(
                     bot
                 )
-            # generate(market)
-            if (
-                "market"
-                in parameter_name
-            ):
+            if "market" in parameter_name:
                 return await generator(
                     market
                 )
-            # Для текущего TEYZUS
-            # безопаснее всего передать bot.
             return await generator(
                 bot
             )
-        # -------------------------------------------------
-        # 2 аргумента
-        # -------------------------------------------------
         if len(parameters) == 2:
             return await generator(
                 bot,
                 market,
             )
-        # -------------------------------------------------
-        # Больше 2 аргументов
-        # -------------------------------------------------
         return await generator(
             bot,
             market,
@@ -294,17 +267,11 @@ async def _call_generator(
             .name
             .lower()
         )
-        if (
-            "bot"
-            in parameter_name
-        ):
+        if "bot" in parameter_name:
             return generator(
                 bot
             )
-        if (
-            "market"
-            in parameter_name
-        ):
+        if "market" in parameter_name:
             return generator(
                 market
             )
@@ -322,7 +289,7 @@ async def _call_generator(
         parameters,
     )
 # =========================================================
-# SIGNAL GENERATION LOOP
+# OLD SIGNAL GENERATION LOOP
 # =========================================================
 async def signal_generation_loop(
     bot: Bot,
@@ -331,66 +298,24 @@ async def signal_generation_loop(
     logger.info(
         "Signal generation loop started."
     )
-    # -----------------------------------------------------
-    # Ищем генератор
-    # -----------------------------------------------------
     generator = _load_generator(
         market
     )
     if generator is None:
-        logger.error(
-            "================================================"
+        logger.warning(
+            "No legacy signal generator found."
         )
-        logger.error(
-            "NO SIGNAL GENERATOR FOUND."
+        logger.warning(
+            "This does NOT stop the automatic "
+            "SignalScanner."
         )
-        logger.error(
-            "Scheduler cannot create new signals."
+    else:
+        logger.info(
+            "Legacy signal generation engine connected."
         )
-        logger.error(
-            "Expected modules:"
-        )
-        for module_name in GENERATOR_MODULES:
-            logger.error(
-                " - %s",
-                module_name,
-            )
-        logger.error(
-            "Expected functions:"
-        )
-        for function_name in GENERATOR_FUNCTIONS:
-            logger.error(
-                " - %s",
-                function_name,
-            )
-        logger.error(
-            "Expected class:"
-        )
-        logger.error(
-            " - SignalGenerator"
-        )
-        logger.error(
-            "Expected method:"
-        )
-        logger.error(
-            " - SignalGenerator.generate"
-        )
-        logger.error(
-            "================================================"
-        )
-        return
-    # -----------------------------------------------------
-    # Генератор найден
-    # -----------------------------------------------------
-    logger.info(
-        "Signal generation engine connected."
-    )
-    # -----------------------------------------------------
-    # Получаем задержку
-    # -----------------------------------------------------
     interval = _get_analysis_interval()
     logger.info(
-        "Signal analysis interval: %s seconds.",
+        "Legacy signal analysis interval: %s seconds.",
         interval,
     )
     # =====================================================
@@ -398,51 +323,41 @@ async def signal_generation_loop(
     # =====================================================
     while True:
         try:
+            if generator is None:
+                await asyncio.sleep(
+                    interval
+                )
+                continue
             logger.info(
-                "Starting market signal analysis..."
+                "Starting legacy market signal analysis..."
             )
-            # ---------------------------------------------
-            # Запускаем существующий генератор
-            # ---------------------------------------------
             result = await _call_generator(
                 generator,
                 bot,
                 market,
             )
-            # ---------------------------------------------
-            # Результат
-            # ---------------------------------------------
             if result is None:
                 logger.info(
-                    "Signal generator finished: "
+                    "Legacy signal generator finished: "
                     "no qualifying signal."
                 )
             else:
                 logger.info(
-                    "Signal generator result: %s",
+                    "Legacy signal generator result: %s",
                     result,
                 )
-        # =================================================
-        # CANCEL
-        # =================================================
         except asyncio.CancelledError:
             logger.info(
-                "Signal generation loop cancelled."
+                "Legacy signal generation loop cancelled."
             )
             raise
-        # =================================================
-        # ERROR
-        # =================================================
         except Exception:
             logger.exception(
-                "Signal generation error."
+                "Legacy signal generation error."
             )
-        # =================================================
-        # DELAY
-        # =================================================
         interval = _get_analysis_interval()
         logger.info(
-            "Next signal analysis in %s seconds.",
+            "Next legacy signal analysis in %s seconds.",
             interval,
         )
         try:
@@ -451,9 +366,90 @@ async def signal_generation_loop(
             )
         except asyncio.CancelledError:
             logger.info(
-                "Signal generation sleep cancelled."
+                "Legacy signal generation sleep cancelled."
             )
             raise
+# =========================================================
+# AUTOMATIC SIGNAL SCANNER
+# =========================================================
+class AutomaticSignalScanner:
+    """
+    Обёртка над SignalScanner.
+    Нужна для того, чтобы:
+        SignalScanner
+    автоматически отправлял найденные сигналы
+    владельцу Telegram-бота.
+    OWNER_ID берётся из config.py.
+    """
+    def __init__(
+        self,
+        bot: Bot,
+        market: MarketClient,
+    ) -> None:
+        self.bot = bot
+        self.market = market
+        self.scanner = SignalScanner(
+            market_client=market,
+            send_signal=self.send_signal,
+        )
+    # =====================================================
+    # SEND SIGNAL
+    # =====================================================
+    async def send_signal(
+        self,
+        signal: TradingSignal,
+    ) -> None:
+        text = (
+            SignalScanner.format_signal(
+                signal
+            )
+        )
+        await self.bot.send_message(
+            chat_id=OWNER_ID,
+            text=text,
+            parse_mode="HTML",
+        )
+        logger.info(
+            (
+                "Automatic signal sent | "
+                "symbol=%s | "
+                "direction=%s | "
+                "quality=%.2f"
+            ),
+            signal.symbol,
+            signal.direction,
+            signal.quality_score,
+        )
+    # =====================================================
+    # START
+    # =====================================================
+    async def start(
+        self,
+    ) -> None:
+        logger.info(
+            "Starting automatic signal scanner..."
+        )
+        await self.scanner.start()
+        logger.info(
+            (
+                "Automatic signal scanner started | "
+                "owner=%s"
+            ),
+            OWNER_ID,
+        )
+    # =====================================================
+    # STOP
+    # =====================================================
+    async def stop(
+        self,
+    ) -> None:
+        logger.info(
+            "Stopping automatic signal scanner..."
+        )
+        await self.scanner.stop()
+        logger.info(
+            "Automatic signal scanner stopped."
+        )
 # =========================================================
 # SCHEDULER
 # =========================================================
@@ -462,12 +458,22 @@ class Scheduler:
         self,
         bot: Bot,
         market: MarketClient,
-    ):
+    ) -> None:
         self.bot = bot
         self.market = market
         self.tasks: list[
             asyncio.Task
         ] = []
+        # =================================================
+        # AUTOMATIC SCANNER
+        # =================================================
+        self.automatic_scanner = (
+            AutomaticSignalScanner(
+                bot=bot,
+                market=market,
+            )
+        )
+        self._scanner_started = False
     # =====================================================
     # START
     # =====================================================
@@ -475,7 +481,7 @@ class Scheduler:
         self,
     ) -> None:
         # -------------------------------------------------
-        # Защита от повторного запуска
+        # ЗАЩИТА ОТ ПОВТОРНОГО ЗАПУСКА
         # -------------------------------------------------
         active_tasks = [
             task
@@ -487,17 +493,13 @@ class Scheduler:
                 "Scheduler already started."
             )
             return
-        # -------------------------------------------------
-        # Если старые задачи завершились,
-        # очищаем список
-        # -------------------------------------------------
         self.tasks.clear()
         logger.info(
             "Starting scheduler..."
         )
         # =================================================
         # TASK 1
-        # SIGNAL GENERATION
+        # LEGACY SIGNAL GENERATION
         # =================================================
         generation_task = (
             asyncio.create_task(
@@ -534,13 +536,24 @@ class Scheduler:
             )
         )
         # =================================================
+        # AUTOMATIC SCANNER
+        # =================================================
+        scanner_task = (
+            asyncio.create_task(
+                self.automatic_scanner.start(),
+                name="automatic_signal_scanner",
+            )
+        )
+        # =================================================
         # SAVE TASKS
         # =================================================
         self.tasks = [
             generation_task,
             warning_task,
             result_task,
+            scanner_task,
         ]
+        self._scanner_started = True
         logger.info(
             "Scheduler started: %s tasks.",
             len(self.tasks),
@@ -553,6 +566,22 @@ class Scheduler:
                 " - %s",
                 task.get_name(),
             )
+        logger.info(
+            "========================================"
+        )
+        logger.info(
+            "AUTOMATIC SIGNAL SYSTEM ENABLED"
+        )
+        logger.info(
+            "Signals will be scanned automatically."
+        )
+        logger.info(
+            "Signals will be sent to OWNER_ID=%s",
+            OWNER_ID,
+        )
+        logger.info(
+            "========================================"
+        )
     # =====================================================
     # STOP
     # =====================================================
@@ -560,26 +589,47 @@ class Scheduler:
         self,
     ) -> None:
         if not self.tasks:
+            # Даже если task list пуст,
+            # на всякий случай останавливаем scanner.
+            if self._scanner_started:
+                try:
+                    await self.automatic_scanner.stop()
+                except Exception:
+                    logger.exception(
+                        "Automatic scanner shutdown error."
+                    )
+                self._scanner_started = False
             return
         logger.info(
             "Stopping scheduler..."
         )
-        # -------------------------------------------------
-        # Cancel tasks
-        # -------------------------------------------------
+        # =================================================
+        # STOP AUTOMATIC SCANNER
+        # =================================================
+        if self._scanner_started:
+            try:
+                await self.automatic_scanner.stop()
+            except Exception:
+                logger.exception(
+                    "Automatic scanner shutdown error."
+                )
+            self._scanner_started = False
+        # =================================================
+        # CANCEL TASKS
+        # =================================================
         for task in self.tasks:
             if not task.done():
                 task.cancel()
-        # -------------------------------------------------
-        # Wait for tasks
-        # -------------------------------------------------
+        # =================================================
+        # WAIT
+        # =================================================
         results = await asyncio.gather(
             *self.tasks,
             return_exceptions=True,
         )
-        # -------------------------------------------------
-        # Check results
-        # -------------------------------------------------
+        # =================================================
+        # CHECK RESULTS
+        # =================================================
         for task, result in zip(
             self.tasks,
             results,
@@ -589,14 +639,16 @@ class Scheduler:
                 Exception,
             ):
                 logger.debug(
-                    "Scheduler task %s "
-                    "stopped with: %s",
+                    (
+                        "Scheduler task %s "
+                        "stopped with: %s"
+                    ),
                     task.get_name(),
                     result,
                 )
-        # -------------------------------------------------
-        # Clear
-        # -------------------------------------------------
+        # =================================================
+        # CLEAR
+        # =================================================
         self.tasks.clear()
         logger.info(
             "Scheduler stopped."
@@ -607,4 +659,5 @@ class Scheduler:
 __all__ = [
     "Scheduler",
     "signal_generation_loop",
+    "AutomaticSignalScanner",
 ]
