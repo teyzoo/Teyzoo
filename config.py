@@ -4,10 +4,6 @@ import os
 from typing import Final
 
 
-# =========================================================
-# ENV HELPERS
-# =========================================================
-
 def get_env(
     name: str,
     default: str | None = None,
@@ -19,10 +15,7 @@ def get_env(
 
     value = value.strip()
 
-    if not value:
-        return default
-
-    return value
+    return value if value else default
 
 
 def get_required_env(name: str) -> str:
@@ -82,7 +75,7 @@ def get_bool_env(
     if value is None:
         return default
 
-    normalized = value.strip().lower()
+    normalized = value.lower()
 
     if normalized in {
         "1",
@@ -103,8 +96,7 @@ def get_bool_env(
         return False
 
     raise RuntimeError(
-        f"Environment variable {name} must be "
-        f"a boolean: true/false."
+        f"Environment variable {name} must be a boolean."
     )
 
 
@@ -147,7 +139,6 @@ ADMIN_IDS_RAW: Final[str] = (
 def get_admin_ids() -> set[int]:
     result: set[int] = set()
 
-    # OWNER автоматически является администратором.
     if OWNER_ID > 0:
         result.add(OWNER_ID)
 
@@ -228,9 +219,6 @@ MARKET_CANDLE_LIMIT: Final[int] = get_int_env(
 # SIGNAL SETTINGS
 # =========================================================
 
-# Минимальное качество сигнала.
-# Например:
-# 85 = сигнал должен иметь качество не ниже 85%.
 SIGNAL_MINIMUM_QUALITY: Final[float] = (
     get_float_env(
         "SIGNAL_MINIMUM_QUALITY",
@@ -238,11 +226,6 @@ SIGNAL_MINIMUM_QUALITY: Final[float] = (
     )
 )
 
-
-# Минимальная историческая вероятность.
-# Например:
-# 70 = историческая вероятность должна быть
-# не ниже 70%.
 SIGNAL_MINIMUM_PROBABILITY: Final[float] = (
     get_float_env(
         "SIGNAL_MINIMUM_PROBABILITY",
@@ -250,42 +233,46 @@ SIGNAL_MINIMUM_PROBABILITY: Final[float] = (
     )
 )
 
-
-# ВАЖНО:
-# signal_policy.py ожидает именно эту переменную.
-#
-# Если TRUE:
-# сигнал обязан пройти проверку исторической вероятности.
-#
-# Если FALSE:
-# историческая вероятность не является обязательным
-# условием фильтрации.
-#
-# По умолчанию включено.
 SIGNAL_REQUIRE_HISTORICAL_PROBABILITY: Final[bool] = (
     get_bool_env(
         "SIGNAL_REQUIRE_HISTORICAL_PROBABILITY",
-        True,
+        False,
     )
 )
 
+SIGNAL_WARNING_MINUTES: Final[int] = get_int_env(
+    "SIGNAL_WARNING_MINUTES",
+    2,
+)
 
-# За сколько минут предупреждать пользователя
-# до сигнала.
-SIGNAL_WARNING_MINUTES: Final[int] = (
-    get_int_env(
-        "SIGNAL_WARNING_MINUTES",
-        2,
-    )
+SIGNAL_EXPIRY_MINUTES: Final[int] = get_int_env(
+    "SIGNAL_EXPIRY_MINUTES",
+    5,
 )
 
 
-# Сколько минут сигнал считается действительным.
-SIGNAL_EXPIRY_MINUTES: Final[int] = (
-    get_int_env(
-        "SIGNAL_EXPIRY_MINUTES",
-        20,
-    )
+# =========================================================
+# SCANNER
+# =========================================================
+
+SIGNAL_SCAN_INTERVAL: Final[int] = get_int_env(
+    "SIGNAL_SCAN_INTERVAL",
+    300,
+)
+
+SIGNAL_CANDLE_LIMIT: Final[int] = get_int_env(
+    "SIGNAL_CANDLE_LIMIT",
+    MARKET_CANDLE_LIMIT,
+)
+
+SIGNAL_PAIRS_PER_CYCLE: Final[int] = get_int_env(
+    "SIGNAL_PAIRS_PER_CYCLE",
+    2,
+)
+
+SIGNAL_COOLDOWN: Final[int] = get_int_env(
+    "SIGNAL_COOLDOWN",
+    300,
 )
 
 
@@ -293,27 +280,19 @@ SIGNAL_EXPIRY_MINUTES: Final[int] = (
 # SCHEDULER
 # =========================================================
 
-SIGNAL_ANALYSIS_INTERVAL: Final[int] = (
-    get_int_env(
-        "SIGNAL_ANALYSIS_INTERVAL",
-        20,
-    )
+SIGNAL_ANALYSIS_INTERVAL: Final[int] = get_int_env(
+    "SIGNAL_ANALYSIS_INTERVAL",
+    20,
 )
 
-
-SIGNAL_WARNING_INTERVAL: Final[int] = (
-    get_int_env(
-        "SIGNAL_WARNING_INTERVAL",
-        15,
-    )
+SIGNAL_WARNING_INTERVAL: Final[int] = get_int_env(
+    "SIGNAL_WARNING_INTERVAL",
+    15,
 )
 
-
-SIGNAL_RESULT_INTERVAL: Final[int] = (
-    get_int_env(
-        "SIGNAL_RESULT_INTERVAL",
-        30,
-    )
+SIGNAL_RESULT_INTERVAL: Final[int] = get_int_env(
+    "SIGNAL_RESULT_INTERVAL",
+    30,
 )
 
 
@@ -329,7 +308,7 @@ TIMEFRAMES: Final[tuple[str, ...]] = (
 
 
 # =========================================================
-# DEFAULT MARKET PAIRS
+# MARKET PAIRS
 # =========================================================
 
 DEFAULT_PAIRS: Final[list[str]] = [
@@ -346,15 +325,33 @@ DEFAULT_PAIRS: Final[list[str]] = [
 ]
 
 
+def get_market_symbols() -> list[str]:
+    raw = get_env(
+        "MARKET_SYMBOLS",
+        "",
+    )
+
+    if not raw:
+        return list(DEFAULT_PAIRS)
+
+    result: list[str] = []
+
+    for item in raw.split(","):
+        item = item.strip()
+
+        if item:
+            result.append(item)
+
+    return result or list(DEFAULT_PAIRS)
+
+
 # =========================================================
-# APPLICATION SETTINGS
+# APPLICATION
 # =========================================================
 
-APPLICATION_MAX_LENGTH: Final[int] = (
-    get_int_env(
-        "APPLICATION_MAX_LENGTH",
-        4000,
-    )
+APPLICATION_MAX_LENGTH: Final[int] = get_int_env(
+    "APPLICATION_MAX_LENGTH",
+    4000,
 )
 
 
@@ -376,168 +373,119 @@ LOG_LEVEL: Final[str] = (
 # =========================================================
 
 def validate_config() -> None:
-
-    # -----------------------------------------------------
-    # Telegram
-    # -----------------------------------------------------
-
     if not BOT_TOKEN:
         raise RuntimeError(
             "BOT_TOKEN is not configured."
         )
-
-
-    # -----------------------------------------------------
-    # Database
-    # -----------------------------------------------------
 
     if not DATABASE_URL:
         raise RuntimeError(
             "DATABASE_URL is not configured."
         )
 
-
-    # -----------------------------------------------------
-    # Market API
-    # -----------------------------------------------------
-
     if not MARKET_API_URL:
         raise RuntimeError(
             "MARKET_API_URL is not configured."
         )
 
-
-    # -----------------------------------------------------
-    # Owner
-    # -----------------------------------------------------
-
     if OWNER_ID <= 0:
         raise RuntimeError(
-            "OWNER_ID must be configured "
-            "with a valid Telegram user ID."
+            "OWNER_ID must be configured."
         )
 
-
-    # -----------------------------------------------------
-    # Port
-    # -----------------------------------------------------
-
-    if PORT <= 0 or PORT > 65535:
+    if not 1 <= PORT <= 65535:
         raise RuntimeError(
             "PORT must be between 1 and 65535."
         )
 
-
-    # -----------------------------------------------------
-    # Market request settings
-    # -----------------------------------------------------
-
     if MARKET_REQUEST_TIMEOUT <= 0:
         raise RuntimeError(
-            "MARKET_REQUEST_TIMEOUT must be "
-            "greater than 0."
+            "MARKET_REQUEST_TIMEOUT must be greater than 0."
         )
 
-
-    if MARKET_CANDLE_LIMIT < 20:
+    if not 20 <= MARKET_CANDLE_LIMIT <= 5000:
         raise RuntimeError(
-            "MARKET_CANDLE_LIMIT must be "
-            "at least 20."
+            "MARKET_CANDLE_LIMIT must be between 20 and 5000."
         )
 
-
-    if MARKET_CANDLE_LIMIT > 5000:
+    if not 0 <= SIGNAL_MINIMUM_QUALITY <= 100:
         raise RuntimeError(
-            "MARKET_CANDLE_LIMIT cannot exceed 5000."
+            "SIGNAL_MINIMUM_QUALITY must be between 0 and 100."
         )
 
-
-    # -----------------------------------------------------
-    # Signal quality
-    # -----------------------------------------------------
-
-    if not (
-        0 <= SIGNAL_MINIMUM_QUALITY <= 100
-    ):
+    if not 0 <= SIGNAL_MINIMUM_PROBABILITY <= 100:
         raise RuntimeError(
-            "SIGNAL_MINIMUM_QUALITY must be "
-            "between 0 and 100."
+            "SIGNAL_MINIMUM_PROBABILITY must be between 0 and 100."
         )
-
-
-    # -----------------------------------------------------
-    # Historical probability
-    # -----------------------------------------------------
-
-    if not (
-        0 <= SIGNAL_MINIMUM_PROBABILITY <= 100
-    ):
-        raise RuntimeError(
-            "SIGNAL_MINIMUM_PROBABILITY must be "
-            "between 0 and 100."
-        )
-
-
-    # -----------------------------------------------------
-    # Signal warning
-    # -----------------------------------------------------
 
     if SIGNAL_WARNING_MINUTES < 0:
         raise RuntimeError(
-            "SIGNAL_WARNING_MINUTES cannot "
-            "be negative."
+            "SIGNAL_WARNING_MINUTES cannot be negative."
         )
-
-
-    # -----------------------------------------------------
-    # Signal expiry
-    # -----------------------------------------------------
 
     if SIGNAL_EXPIRY_MINUTES <= 0:
         raise RuntimeError(
-            "SIGNAL_EXPIRY_MINUTES must be "
-            "greater than 0."
+            "SIGNAL_EXPIRY_MINUTES must be greater than 0."
         )
 
-
-    # -----------------------------------------------------
-    # Scheduler
-    # -----------------------------------------------------
-
-    if SIGNAL_ANALYSIS_INTERVAL <= 0:
+    if SIGNAL_SCAN_INTERVAL <= 0:
         raise RuntimeError(
-            "SIGNAL_ANALYSIS_INTERVAL must be "
-            "greater than 0."
+            "SIGNAL_SCAN_INTERVAL must be greater than 0."
         )
 
-
-    if SIGNAL_WARNING_INTERVAL <= 0:
+    if SIGNAL_COOLDOWN < 0:
         raise RuntimeError(
-            "SIGNAL_WARNING_INTERVAL must be "
-            "greater than 0."
+            "SIGNAL_COOLDOWN cannot be negative."
         )
 
-
-    if SIGNAL_RESULT_INTERVAL <= 0:
+    if not TIMEFRAMES:
         raise RuntimeError(
-            "SIGNAL_RESULT_INTERVAL must be "
-            "greater than 0."
+            "TIMEFRAMES cannot be empty."
         )
 
-
-    # -----------------------------------------------------
-    # Application
-    # -----------------------------------------------------
-
-    if APPLICATION_MAX_LENGTH <= 0:
+    if not DEFAULT_PAIRS:
         raise RuntimeError(
-            "APPLICATION_MAX_LENGTH must be "
-            "greater than 0."
+            "DEFAULT_PAIRS cannot be empty."
         )
 
-
-# =========================================================
-# STARTUP VALIDATION
-# =========================================================
 
 validate_config()
+
+
+__all__ = [
+    "BOT_TOKEN",
+    "DATABASE_URL",
+    "OWNER_ID",
+    "ADMIN_IDS",
+    "is_admin",
+    "is_owner",
+    "HOST",
+    "PORT",
+    "MARKET_API_URL",
+    "MARKET_API_KEY",
+    "MARKET_REQUEST_TIMEOUT",
+    "MARKET_CANDLE_LIMIT",
+    "SIGNAL_MINIMUM_QUALITY",
+    "SIGNAL_MINIMUM_PROBABILITY",
+    "SIGNAL_REQUIRE_HISTORICAL_PROBABILITY",
+    "SIGNAL_WARNING_MINUTES",
+    "SIGNAL_EXPIRY_MINUTES",
+    "SIGNAL_SCAN_INTERVAL",
+    "SIGNAL_CANDLE_LIMIT",
+    "SIGNAL_PAIRS_PER_CYCLE",
+    "SIGNAL_COOLDOWN",
+    "SIGNAL_ANALYSIS_INTERVAL",
+    "SIGNAL_WARNING_INTERVAL",
+    "SIGNAL_RESULT_INTERVAL",
+    "TIMEFRAMES",
+    "DEFAULT_PAIRS",
+    "get_market_symbols",
+    "APPLICATION_MAX_LENGTH",
+    "LOG_LEVEL",
+    "get_env",
+    "get_required_env",
+    "get_int_env",
+    "get_float_env",
+    "get_bool_env",
+    "validate_config",
+]
