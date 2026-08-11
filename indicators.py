@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Sequence
 
 from market import Candle
@@ -22,17 +23,26 @@ class IndicatorResult:
     bollinger_lower: float | None
 
 
-# =========================================================
-# BASIC HELPERS
-# =========================================================
-
 def _prices(
     candles: Sequence[Candle],
 ) -> list[float]:
-    return [
+    values = [
         float(candle.close)
         for candle in candles
     ]
+
+    if not values:
+        return []
+
+    if any(
+        not isfinite(value)
+        for value in values
+    ):
+        raise ValueError(
+            "Candle prices contain non-finite values."
+        )
+
+    return values
 
 
 def _sma(
@@ -47,9 +57,9 @@ def _sma(
     if len(values) < period:
         return None
 
-    window = values[-period:]
-
-    return sum(window) / period
+    return sum(
+        values[-period:]
+    ) / period
 
 
 def _ema_series(
@@ -64,30 +74,24 @@ def _ema_series(
     if len(values) < period:
         return []
 
-    initial = (
-        sum(values[:period])
-        / period
+    multiplier = 2.0 / (
+        period + 1.0
     )
 
-    multiplier = (
-        2.0
-        / (period + 1)
-    )
+    previous = sum(
+        values[:period]
+    ) / period
 
-    result = [initial]
-
-    previous = initial
+    result = [previous]
 
     for value in values[period:]:
-        current = (
-            (value - previous)
-            * multiplier
-            + previous
+        previous = (
+            previous
+            + multiplier
+            * (value - previous)
         )
 
-        result.append(current)
-
-        previous = current
+        result.append(previous)
 
     return result
 
@@ -101,15 +105,8 @@ def _ema(
         period,
     )
 
-    if not series:
-        return None
+    return series[-1] if series else None
 
-    return series[-1]
-
-
-# =========================================================
-# RSI
-# =========================================================
 
 def _rsi(
     values: Sequence[float],
@@ -126,23 +123,19 @@ def _rsi(
     gains: list[float] = []
     losses: list[float] = []
 
-    for index in range(
-        1,
-        len(values),
+    for current, previous in zip(
+        values[1:],
+        values[:-1],
     ):
-        change = (
-            values[index]
-            - values[index - 1]
+        change = current - previous
+
+        gains.append(
+            max(change, 0.0)
         )
 
-        if change > 0:
-            gains.append(change)
-            losses.append(0.0)
-        else:
-            gains.append(0.0)
-            losses.append(
-                abs(change)
-            )
+        losses.append(
+            max(-change, 0.0)
+        )
 
     average_gain = (
         sum(gains[:period])
@@ -174,29 +167,22 @@ def _rsi(
             + losses[index]
         ) / period
 
-    if average_loss == 0:
-        if average_gain == 0:
-            return 50.0
+    if average_loss == 0.0:
+        return (
+            50.0
+            if average_gain == 0.0
+            else 100.0
+        )
 
-        return 100.0
-
-    relative_strength = (
+    rs = (
         average_gain
         / average_loss
     )
 
-    return (
-        100.0
-        - (
-            100.0
-            / (1.0 + relative_strength)
-        )
+    return 100.0 - (
+        100.0 / (1.0 + rs)
     )
 
-
-# =========================================================
-# MACD
-# =========================================================
 
 def _macd(
     values: Sequence[float],
@@ -218,62 +204,50 @@ def _macd(
 
     if fast_period >= slow_period:
         raise ValueError(
-            "MACD fast period must be "
-            "smaller than slow period."
+            "MACD fast period must be smaller than slow period."
         )
 
     if len(values) < slow_period:
         return None, None
 
-    fast_series = _ema_series(
+    fast = _ema_series(
         values,
         fast_period,
     )
 
-    slow_series = _ema_series(
+    slow = _ema_series(
         values,
         slow_period,
     )
 
-    if not fast_series or not slow_series:
+    if not fast or not slow:
         return None, None
-
-    # EMA series have different starting
-    # positions. Align them by timestamp/
-    # candle index.
-    fast_offset = (
-        fast_period - 1
-    )
-
-    slow_offset = (
-        slow_period - 1
-    )
 
     macd_values: list[float] = []
 
-    for index in range(
-        slow_offset,
+    for candle_index in range(
+        slow_period - 1,
         len(values),
     ):
         fast_index = (
-            index - fast_offset
+            candle_index
+            - (fast_period - 1)
         )
 
         slow_index = (
-            index - slow_offset
+            candle_index
+            - (slow_period - 1)
         )
 
-        if (
-            fast_index < 0
-            or fast_index >= len(fast_series)
-            or slow_index < 0
-            or slow_index >= len(slow_series)
+        if not (
+            0 <= fast_index < len(fast)
+            and 0 <= slow_index < len(slow)
         ):
             continue
 
         macd_values.append(
-            fast_series[fast_index]
-            - slow_series[slow_index]
+            fast[fast_index]
+            - slow[slow_index]
         )
 
     if not macd_values:
@@ -281,23 +255,16 @@ def _macd(
 
     macd_value = macd_values[-1]
 
-    signal_series = _ema_series(
+    signal = _ema_series(
         macd_values,
         signal_period,
     )
 
-    if not signal_series:
-        return macd_value, None
-
     return (
         macd_value,
-        signal_series[-1],
+        signal[-1] if signal else None,
     )
 
-
-# =========================================================
-# BOLLINGER BANDS
-# =========================================================
 
 def _bollinger_bands(
     values: Sequence[float],
@@ -324,114 +291,74 @@ def _bollinger_bands(
         values[-period:]
     )
 
-    mean = (
-        sum(window)
-        / period
+    mean = sum(window) / period
+
+    variance = sum(
+        (value - mean) ** 2
+        for value in window
+    ) / period
+
+    std = variance ** 0.5
+
+    return (
+        mean + deviations * std,
+        mean - deviations * std,
     )
 
-    variance = (
-        sum(
-            (
-                value - mean
-            ) ** 2
-            for value in window
-        )
-        / period
-    )
-
-    standard_deviation = (
-        variance ** 0.5
-    )
-
-    upper = (
-        mean
-        + deviations
-        * standard_deviation
-    )
-
-    lower = (
-        mean
-        - deviations
-        * standard_deviation
-    )
-
-    return upper, lower
-
-
-# =========================================================
-# PUBLIC CALCULATOR
-# =========================================================
 
 def calculate_indicators(
     candles: Sequence[Candle],
 ) -> IndicatorResult:
-    """
-    Рассчитывает основные индикаторы,
-    используемые signal_engine.py.
-
-    EMA:
-        9 / 21
-
-    RSI:
-        14
-
-    MACD:
-        12 / 26 / 9
-
-    Bollinger:
-        20 / 2
-    """
-
     if not candles:
         raise ValueError(
-            "Cannot calculate indicators "
-            "without candles."
+            "Cannot calculate indicators without candles."
         )
 
     values = _prices(candles)
 
-    price = values[-1]
-
-    ema_fast = _ema(
-        values,
-        9,
-    )
-
-    ema_slow = _ema(
-        values,
-        21,
-    )
-
-    rsi = _rsi(
-        values,
-        14,
-    )
-
-    macd, macd_signal = _macd(
-        values,
-        fast_period=12,
-        slow_period=26,
-        signal_period=9,
-    )
-
-    (
-        bollinger_upper,
-        bollinger_lower,
-    ) = _bollinger_bands(
-        values,
-        period=20,
-        deviations=2.0,
-    )
-
     return IndicatorResult(
-        price=price,
-        ema_fast=ema_fast,
-        ema_slow=ema_slow,
-        rsi=rsi,
-        macd=macd,
-        macd_signal=macd_signal,
-        bollinger_upper=bollinger_upper,
-        bollinger_lower=bollinger_lower,
+        price=values[-1],
+
+        ema_fast=_ema(
+            values,
+            9,
+        ),
+
+        ema_slow=_ema(
+            values,
+            21,
+        ),
+
+        rsi=_rsi(
+            values,
+            14,
+        ),
+
+        macd=_macd(
+            values,
+            12,
+            26,
+            9,
+        )[0],
+
+        macd_signal=_macd(
+            values,
+            12,
+            26,
+            9,
+        )[1],
+
+        bollinger_upper=_bollinger_bands(
+            values,
+            20,
+            2.0,
+        )[0],
+
+        bollinger_lower=_bollinger_bands(
+            values,
+            20,
+            2.0,
+        )[1],
     )
 
 
