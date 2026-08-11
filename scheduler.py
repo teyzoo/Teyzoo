@@ -1,4 +1,4 @@
-from future import annotations
+from __future__ import annotations
 
 import asyncio
 import importlib
@@ -9,949 +9,1304 @@ from typing import Any
 from aiogram import Bot
 
 from market import MarketClient
+
 from result_checker import result_checker_loop
 from signal_warning.scheduler import warning_scheduler
 
-logger = logging.getLogger(“scheduler”)
 
-=========================================================
+logger = logging.getLogger("scheduler")
 
-SIGNAL GENERATOR DISCOVERY
 
-=========================================================
+# =========================================================
+# SIGNAL SCANNER
+# =========================================================
+
+SCANNER_MODULE = "signal_scanner"
+SCANNER_CLASS = "SignalScanner"
+
+
+# =========================================================
+# LEGACY SIGNAL GENERATOR DISCOVERY
+# =========================================================
 
 GENERATOR_MODULES = (
-“signal_generator”,
-“signal_engine”,
-“signal_analyzer”,
-“analyzer”,
-“signals.generator”,
-“signals.engine”,
-“signals.analyzer”,
+    "signal_generator",
+    "signal_engine",
+    "signal_analyzer",
+    "analyzer",
+    "signals.generator",
+    "signals.engine",
+    "signals.analyzer",
 )
 
 GENERATOR_FUNCTIONS = (
-“generate_signal”,
-“generate_signals”,
-“analyze_market”,
-“analyze_markets”,
-“find_signal”,
-“find_signals”,
-“run_signal_analysis”,
-“run_analysis”,
+    "generate_signal",
+    "generate_signals",
+    "analyze_market",
+    "analyze_markets",
+    "find_signal",
+    "find_signals",
+    "run_signal_analysis",
+    "run_analysis",
 )
 
-=========================================================
 
-SIGNAL SCANNER DISCOVERY
+# =========================================================
+# GET ANALYSIS INTERVAL
+# =========================================================
 
-=========================================================
 
-SCANNER_MODULE = “signal_scanner”
-SCANNER_CLASS = “SignalScanner”
+def _get_analysis_interval() -> int:
+    """
+    Получает интервал анализа из config.py.
 
-=========================================================
+    Используется:
 
-LOAD SIGNAL GENERATOR
+        SIGNAL_ANALYSIS_INTERVAL
 
-=========================================================
+    Если настройки нет — 300 секунд.
 
-def _load_generator(
-market: MarketClient,
+    ВАЖНО:
+
+    Текущий SignalScanner также имеет собственный
+    SIGNAL_SCAN_INTERVAL.
+
+    Для scanner режима scheduler НЕ использует
+    этот интервал для запуска циклов.
+
+    SignalScanner сам управляет своими циклами.
+    """
+
+    try:
+        from config import SIGNAL_ANALYSIS_INTERVAL
+
+        return max(
+            1,
+            int(SIGNAL_ANALYSIS_INTERVAL),
+        )
+
+    except Exception:
+        logger.warning(
+            (
+                "SIGNAL_ANALYSIS_INTERVAL "
+                "is unavailable. "
+                "Using 300 seconds."
+            )
+        )
+
+        return 300
+
+
+# =========================================================
+# CREATE SIGNAL SCANNER
+# =========================================================
+
+
+def _create_signal_scanner(
+    market: MarketClient,
 ) -> Any | None:
-“””
-Автоматически ищет существующий генератор сигналов.
+    """
+    Создаёт текущий SignalScanner.
 
-Порядок:
-1. signal_generator.py
-2. signal_engine.py
-3. signal_analyzer.py
-4. analyzer.py
-5. signals.generator
-6. signals.engine
-7. signals.analyzer
-8. SignalGenerator
-9. SignalScanner
-SignalEngine сам по себе не считается генератором,
-если его методы требуют candles.
-Если найден SignalScanner, scheduler запускает его
-через специальный scanner-loop.
-"""
-# =====================================================
-# EXISTING GENERATOR MODULES
-# =====================================================
-for module_name in GENERATOR_MODULES:
+    Ожидается:
+
+        signal_scanner.py
+            └── SignalScanner
+
+    Конструктор текущего scanner:
+
+        SignalScanner(
+            market_client=market,
+        )
+
+    Дополнительно поддерживается старый вариант:
+
+        SignalScanner(market)
+    """
+
     try:
         module = importlib.import_module(
-            module_name
+            SCANNER_MODULE
         )
+
     except ModuleNotFoundError:
-        continue
+        logger.warning(
+            "signal_scanner.py not found."
+        )
+        return None
+
     except Exception:
         logger.exception(
-            "Failed to import signal module: %s",
-            module_name,
+            "Failed to import signal_scanner.py."
         )
-        continue
-    # =================================================
-    # ORDINARY FUNCTIONS
-    # =================================================
-    for function_name in GENERATOR_FUNCTIONS:
-        function = getattr(
-            module,
-            function_name,
-            None,
-        )
-        if function is None:
-            continue
-        if not callable(function):
-            continue
-        logger.info(
-            "Signal generator function found: "
-            "%s.%s",
-            module_name,
-            function_name,
-        )
-        return function
-    # =================================================
-    # SIGNAL GENERATOR CLASS
-    # =================================================
-    generator_class = getattr(
+        return None
+
+    scanner_class = getattr(
         module,
-        "SignalGenerator",
+        SCANNER_CLASS,
         None,
     )
-    if generator_class is None:
-        continue
+
+    if scanner_class is None:
+        logger.error(
+            (
+                "SignalScanner class was not "
+                "found in signal_scanner.py."
+            )
+        )
+        return None
+
     logger.info(
-        "SignalGenerator class found in %s",
-        module_name,
+        "SignalScanner class found."
     )
-    instance: Any | None = None
-    try:
-        instance = generator_class(
-            market
-        )
-    except TypeError:
-        try:
-            instance = generator_class(
-                market=market
-            )
-        except Exception:
-            logger.exception(
-                "Failed to initialize "
-                "SignalGenerator from %s",
-                module_name,
-            )
-    except Exception:
-        logger.exception(
-            "Failed to initialize "
-            "SignalGenerator from %s",
-            module_name,
-        )
-    if instance is None:
-        continue
-    # =================================================
-    # GENERATE METHOD
-    # =================================================
-    generate_method = getattr(
-        instance,
-        "generate",
-        None,
-    )
-    if callable(generate_method):
-        logger.info(
-            "SignalGenerator connected: "
-            "%s.SignalGenerator.generate",
-            module_name,
-        )
-        return generate_method
-    # =================================================
-    # OTHER METHODS
-    # =================================================
-    for method_name in GENERATOR_FUNCTIONS:
-        method = getattr(
-            instance,
-            method_name,
-            None,
-        )
-        if not callable(method):
-            continue
-        logger.info(
-            "Signal generator method found: "
-            "%s.SignalGenerator.%s",
-            module_name,
-            method_name,
-        )
-        return method
-# =====================================================
-# SIGNAL SCANNER FALLBACK
-# =====================================================
-try:
-    scanner_module = importlib.import_module(
-        SCANNER_MODULE
-    )
-except ModuleNotFoundError:
-    logger.warning(
-        "signal_scanner.py not found."
-    )
-    return None
-except Exception:
-    logger.exception(
-        "Failed to import signal_scanner."
-    )
-    return None
-scanner_class = getattr(
-    scanner_module,
-    SCANNER_CLASS,
-    None,
-)
-if scanner_class is None:
-    logger.warning(
-        "SignalScanner class not found."
-    )
-    return None
-logger.info(
-    "SignalScanner class found."
-)
-try:
-    scanner = scanner_class(
-        market_client=market,
-    )
-except TypeError:
+
+    # =====================================================
+    # CURRENT API
+    # =====================================================
+
     try:
         scanner = scanner_class(
-            market
+            market_client=market,
         )
+
+        logger.info(
+            (
+                "SignalScanner initialized "
+                "using market_client=market."
+            )
+        )
+
+        return scanner
+
+    except TypeError:
+        pass
+
     except Exception:
         logger.exception(
             "Failed to initialize SignalScanner."
         )
         return None
-except Exception:
-    logger.exception(
-        "Failed to initialize SignalScanner."
-    )
-    return None
-scan_once = getattr(
-    scanner,
-    "scan_once",
-    None,
-)
-if not callable(scan_once):
-    logger.error(
-        "SignalScanner does not provide scan_once()."
-    )
-    return None
-# =====================================================
-# MARK SCANNER
-# =====================================================
-try:
-    setattr(
-        scan_once,
-        "__teyzus_signal_scanner__",
-        scanner,
-    )
-except Exception:
-    pass
-logger.info(
-    "SignalScanner connected: "
-    "SignalScanner.scan_once"
-)
-return scan_once
 
-=========================================================
+    # =====================================================
+    # LEGACY API
+    # =====================================================
 
-GET ANALYSIS INTERVAL
-
-=========================================================
-
-def _get_analysis_interval() -> int:
-“””
-Берёт SIGNAL_ANALYSIS_INTERVAL из config.py.
-
-Если настройка отсутствует или повреждена,
-используется 20 секунд.
-"""
-try:
-    from config import (
-        SIGNAL_ANALYSIS_INTERVAL,
-    )
-    interval = int(
-        SIGNAL_ANALYSIS_INTERVAL
-    )
-    return max(
-        1,
-        interval,
-    )
-except Exception:
-    logger.warning(
-        (
-            "SIGNAL_ANALYSIS_INTERVAL "
-            "is unavailable. "
-            "Using 20 seconds."
-        )
-    )
-    return 20
-
-=========================================================
-
-CALL GENERATOR
-
-=========================================================
-
-async def _call_generator(
-generator: Any,
-bot: Bot,
-market: MarketClient,
-) -> Any:
-“””
-Универсально вызывает генератор.
-
-Поддерживает:
-    generate()
-    generate(bot)
-    generate(market)
-    generate(bot, market)
-Также поддерживает обычные sync-функции.
-"""
-# =====================================================
-# SIGNATURE
-# =====================================================
-try:
-    signature = inspect.signature(
-        generator
-    )
-    parameters = list(
-        signature.parameters.values()
-    )
-except Exception:
-    parameters = []
-# =====================================================
-# POSITIONAL PARAMETERS
-# =====================================================
-positional_parameters = [
-    parameter
-    for parameter in parameters
-    if parameter.kind
-    in (
-        inspect.Parameter.POSITIONAL_ONLY,
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-    )
-]
-parameters = positional_parameters
-# =====================================================
-# ASYNC GENERATOR
-# =====================================================
-if inspect.iscoroutinefunction(
-    generator
-):
-    # -------------------------------------------------
-    # 0 arguments
-    # -------------------------------------------------
-    if len(parameters) == 0:
-        return await generator()
-    # -------------------------------------------------
-    # 1 argument
-    # -------------------------------------------------
-    if len(parameters) == 1:
-        parameter_name = (
-            parameters[0]
-            .name
-            .lower()
-        )
-        if "market" in parameter_name:
-            return await generator(
-                market
-            )
-        if "bot" in parameter_name:
-            return await generator(
-                bot
-            )
-        return await generator(
-            bot
-        )
-    # -------------------------------------------------
-    # 2 arguments
-    # -------------------------------------------------
-    if len(parameters) == 2:
-        return await generator(
-            bot,
-            market,
-        )
-    # -------------------------------------------------
-    # MORE THAN 2
-    # -------------------------------------------------
-    return await generator(
-        bot,
-        market,
-        parameters,
-    )
-# =====================================================
-# SYNC GENERATOR
-# =====================================================
-if len(parameters) == 0:
-    result = generator()
-    if inspect.isawaitable(result):
-        return await result
-    return result
-# =====================================================
-# ONE ARGUMENT
-# =====================================================
-if len(parameters) == 1:
-    parameter_name = (
-        parameters[0]
-        .name
-        .lower()
-    )
-    if "market" in parameter_name:
-        result = generator(
+    try:
+        scanner = scanner_class(
             market
         )
-    elif "bot" in parameter_name:
-        result = generator(
-            bot
+
+        logger.info(
+            (
+                "SignalScanner initialized "
+                "using positional market argument."
+            )
         )
-    else:
-        result = generator(
-            bot
+
+        return scanner
+
+    except Exception:
+        logger.exception(
+            "Failed to initialize SignalScanner."
         )
-    if inspect.isawaitable(result):
-        return await result
-    return result
-# =====================================================
-# TWO ARGUMENTS
-# =====================================================
-if len(parameters) == 2:
+
+        return None
+
+
+# =========================================================
+# CALL GENERATOR
+# =========================================================
+
+
+async def _call_generator(
+    generator: Any,
+    bot: Bot,
+    market: MarketClient,
+) -> Any:
+    """
+    Универсальный запуск старого генератора.
+
+    Поддерживает:
+
+        generate()
+        generate(bot)
+        generate(market)
+        generate(bot, market)
+
+    Также поддерживает sync-функции.
+    """
+
+    # =====================================================
+    # SIGNATURE
+    # =====================================================
+
+    try:
+        signature = inspect.signature(
+            generator
+        )
+
+        parameters = list(
+            signature.parameters.values()
+        )
+
+    except Exception:
+        parameters = []
+
+    positional_parameters = [
+        parameter
+        for parameter in parameters
+        if parameter.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+
+    parameters = positional_parameters
+
+    # =====================================================
+    # ARGUMENT BUILDER
+    # =====================================================
+
+    def build_arguments() -> list[Any]:
+        if len(parameters) == 0:
+            return []
+
+        if len(parameters) == 1:
+            parameter_name = (
+                parameters[0]
+                .name
+                .lower()
+            )
+
+            if "market" in parameter_name:
+                return [market]
+
+            if "bot" in parameter_name:
+                return [bot]
+
+            return [bot]
+
+        if len(parameters) == 2:
+            return [
+                bot,
+                market,
+            ]
+
+        return [
+            bot,
+            market,
+        ]
+
+    arguments = build_arguments()
+
+    # =====================================================
+    # ASYNC
+    # =====================================================
+
+    if inspect.iscoroutinefunction(
+        generator
+    ):
+        return await generator(
+            *arguments
+        )
+
+    # =====================================================
+    # SYNC
+    # =====================================================
+
     result = generator(
-        bot,
-        market,
+        *arguments
     )
+
     if inspect.isawaitable(result):
         return await result
+
     return result
-# =====================================================
-# MORE THAN TWO
-# =====================================================
-result = generator(
-    bot,
-    market,
-    parameters,
-)
-if inspect.isawaitable(result):
-    return await result
-return result
 
-=========================================================
 
-SIGNAL SCANNER LOOP
+# =========================================================
+# RUN SIGNAL SCANNER
+# =========================================================
 
-=========================================================
 
 async def _run_signal_scanner(
-scanner: Any,
+    scanner: Any,
 ) -> None:
-“””
-Запускает SignalScanner в постоянном цикле.
+    """
+    Запускает текущий SignalScanner.
 
-Важно:
-Некоторые версии SignalScanner.scan_once()
-используют внутреннее состояние _running.
-Поэтому перед запуском включаем:
-    scanner._running = True
-и очищаем:
-    scanner._stop_event
-"""
-logger.info(
-    "SignalScanner loop started."
-)
-# =====================================================
-# VALIDATION
-# =====================================================
-symbols = getattr(
-    scanner,
-    "symbols",
-    None,
-)
-timeframes = getattr(
-    scanner,
-    "timeframes",
-    None,
-)
-if not symbols:
-    logger.error(
-        "SignalScanner has no symbols."
+    Текущий scanner.py содержит:
+
+        _running
+        _stop_event
+        scan_once()
+
+    Поэтому scheduler вручную активирует scanner
+    и вызывает scan_once() циклически.
+
+    Это сделано намеренно, потому что в текущем
+    SignalScanner scan_once() прекращает работу,
+    если:
+
+        self._running == False
+    """
+
+    logger.info(
+        "================================================"
     )
-    return
-if not timeframes:
-    logger.error(
-        "SignalScanner has no timeframes."
+
+    logger.info(
+        "SIGNAL SCANNER MODE"
     )
-    return
-# =====================================================
-# ACTIVATE SCANNER
-# =====================================================
-try:
-    scanner._running = True
+
+    logger.info(
+        "================================================"
+    )
+
+    # =====================================================
+    # VALIDATION
+    # =====================================================
+
+    symbols = getattr(
+        scanner,
+        "symbols",
+        None,
+    )
+
+    timeframes = getattr(
+        scanner,
+        "timeframes",
+        None,
+    )
+
+    if not symbols:
+        logger.error(
+            "SignalScanner has no symbols."
+        )
+        return
+
+    if not timeframes:
+        logger.error(
+            "SignalScanner has no timeframes."
+        )
+        return
+
+    # =====================================================
+    # ACTIVATE
+    # =====================================================
+
+    try:
+        scanner._running = True
+
+    except Exception:
+        logger.exception(
+            "Failed to activate SignalScanner."
+        )
+        return
+
     stop_event = getattr(
         scanner,
         "_stop_event",
         None,
     )
+
     if stop_event is not None:
         try:
             stop_event.clear()
+
         except Exception:
-            pass
-except Exception:
-    logger.exception(
-        "Failed to activate SignalScanner."
-    )
-    return
-# =====================================================
-# INTERVAL
-# =====================================================
-interval = _get_analysis_interval()
-logger.info(
-    (
-        "SignalScanner active | "
-        "pairs=%s | "
-        "timeframes=%s | "
-        "interval=%ss"
-    ),
-    len(symbols),
-    timeframes,
-    interval,
-)
-# =====================================================
-# MAIN LOOP
-# =====================================================
-try:
-    while True:
-        try:
-            logger.info(
-                "Starting SignalScanner analysis..."
+            logger.debug(
+                "Could not clear scanner stop event.",
+                exc_info=True,
             )
-            signals = await scanner.scan_once()
-            # =================================================
-            # NO SIGNAL
-            # =================================================
-            if not signals:
+
+    # =====================================================
+    # SCANNER CONFIG
+    # =====================================================
+
+    scan_interval = getattr(
+        scanner,
+        "scan_interval",
+        None,
+    )
+
+    candle_limit = getattr(
+        scanner,
+        "candle_limit",
+        None,
+    )
+
+    minimum_quality = getattr(
+        scanner,
+        "minimum_quality",
+        None,
+    )
+
+    logger.info(
+        (
+            "SignalScanner active | "
+            "pairs=%s | "
+            "timeframes=%s | "
+            "interval=%ss | "
+            "candles=%s | "
+            "minimum_quality=%.1f"
+        ),
+        len(symbols),
+        timeframes,
+        scan_interval,
+        candle_limit,
+        float(
+            minimum_quality
+            if minimum_quality is not None
+            else 0.0
+        ),
+    )
+
+    # =====================================================
+    # MAIN LOOP
+    # =====================================================
+
+    try:
+        while True:
+
+            # -------------------------------------------------
+            # STOP CHECK
+            # -------------------------------------------------
+
+            if not getattr(
+                scanner,
+                "_running",
+                True,
+            ):
                 logger.info(
-                    (
-                        "⛔ Сейчас сигнала нет. "
-                        "Все проверенные варианты "
-                        "не прошли фильтрацию."
-                    )
+                    "SignalScanner requested stop."
                 )
-            # =================================================
-            # SIGNALS FOUND
-            # =================================================
-            else:
+                break
+
+            # -------------------------------------------------
+            # SCAN
+            # -------------------------------------------------
+
+            try:
                 logger.info(
-                    (
-                        "SignalScanner produced "
-                        "%s qualifying signal(s)."
-                    ),
-                    len(signals),
+                    "Starting SignalScanner analysis..."
                 )
-                for signal in signals:
+
+                signals = await scanner.scan_once()
+
+                # =================================================
+                # NO SIGNAL
+                # =================================================
+
+                if not signals:
                     logger.info(
                         (
-                            "QUALIFIED SIGNAL | "
-                            "symbol=%s | "
-                            "direction=%s | "
-                            "quality=%.2f | "
-                            "confirmations=%s/%s"
+                            "⛔ Сейчас сигнала нет. "
+                            "Проверенные пары не прошли "
+                            "Quality Filter."
+                        )
+                    )
+
+                # =================================================
+                # SIGNALS FOUND
+                # =================================================
+
+                else:
+                    logger.info(
+                        (
+                            "🚨 SignalScanner produced "
+                            "%s qualifying signal(s)."
                         ),
-                        getattr(
-                            signal,
-                            "symbol",
-                            "?",
-                        ),
-                        getattr(
-                            signal,
-                            "direction",
-                            "?",
-                        ),
-                        float(
+                        len(signals),
+                    )
+
+                    for signal in signals:
+
+                        logger.info(
+                            (
+                                "QUALIFIED SIGNAL | "
+                                "symbol=%s | "
+                                "direction=%s | "
+                                "quality=%.2f | "
+                                "confirmations=%s/%s"
+                            ),
                             getattr(
                                 signal,
-                                "quality_score",
-                                0.0,
-                            )
-                        ),
-                        getattr(
-                            signal,
-                            "confirmations",
-                            0,
-                        ),
-                        getattr(
-                            signal,
-                            "total_checks",
-                            0,
-                        ),
-                    )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception(
-                "SignalScanner analysis error."
+                                "symbol",
+                                "?",
+                            ),
+                            getattr(
+                                signal,
+                                "direction",
+                                "?",
+                            ),
+                            float(
+                                getattr(
+                                    signal,
+                                    "quality_score",
+                                    0.0,
+                                )
+                            ),
+                            getattr(
+                                signal,
+                                "confirmations",
+                                0,
+                            ),
+                            getattr(
+                                signal,
+                                "total_checks",
+                                0,
+                            ),
+                        )
+
+            except asyncio.CancelledError:
+                raise
+
+            except Exception:
+                logger.exception(
+                    "SignalScanner analysis error."
+                )
+
+            # =================================================
+            # INTERVAL
+            # =================================================
+
+            interval = getattr(
+                scanner,
+                "scan_interval",
+                None,
             )
-        # =================================================
-        # RELOAD INTERVAL
-        # =================================================
-        interval = _get_analysis_interval()
-        logger.info(
-            "Next SignalScanner analysis in %s seconds.",
-            interval,
-        )
-        try:
-            await asyncio.sleep(
-                interval
-            )
-        except asyncio.CancelledError:
-            raise
-finally:
-    # =====================================================
-    # DEACTIVATE
-    # =====================================================
-    try:
-        scanner._running = False
-    except Exception:
-        pass
-    logger.info(
-        "SignalScanner loop stopped."
-    )
 
-=========================================================
+            try:
+                interval = max(
+                    1,
+                    int(interval),
+                )
 
-SIGNAL GENERATION LOOP
+            except Exception:
+                interval = 300
 
-=========================================================
-
-async def signal_generation_loop(
-bot: Bot,
-market: MarketClient,
-) -> None:
-“””
-Главный цикл генерации сигналов.
-
-Если найден SignalScanner,
-используется scanner mode.
-Иначе используется старый совместимый
-generator mode.
-"""
-logger.info(
-    "Signal generation loop started."
-)
-# =====================================================
-# LOAD GENERATOR
-# =====================================================
-generator = _load_generator(
-    market
-)
-if generator is None:
-    logger.error(
-        "================================================"
-    )
-    logger.error(
-        "NO SIGNAL GENERATOR FOUND."
-    )
-    logger.error(
-        "Scheduler cannot create new signals."
-    )
-    logger.error(
-        "Expected modules:"
-    )
-    for module_name in GENERATOR_MODULES:
-        logger.error(
-            " - %s",
-            module_name,
-        )
-    logger.error(
-        "Expected module:"
-    )
-    logger.error(
-        " - signal_scanner.py"
-    )
-    logger.error(
-        "Expected classes:"
-    )
-    logger.error(
-        " - SignalGenerator"
-    )
-    logger.error(
-        " - SignalScanner"
-    )
-    logger.error(
-        "================================================"
-    )
-    return
-# =====================================================
-# CHECK FOR SIGNAL SCANNER
-# =====================================================
-scanner = getattr(
-    generator,
-    "__teyzus_signal_scanner__",
-    None,
-)
-if scanner is not None:
-    logger.info(
-        "SignalScanner mode selected."
-    )
-    await _run_signal_scanner(
-        scanner
-    )
-    return
-# =====================================================
-# NORMAL GENERATOR MODE
-# =====================================================
-logger.info(
-    "Signal generation engine connected."
-)
-interval = _get_analysis_interval()
-logger.info(
-    "Signal analysis interval: %s seconds.",
-    interval,
-)
-# =====================================================
-# MAIN LOOP
-# =====================================================
-while True:
-    try:
-        logger.info(
-            "Starting market signal analysis..."
-        )
-        result = await _call_generator(
-            generator,
-            bot,
-            market,
-        )
-        # =================================================
-        # NO RESULT
-        # =================================================
-        if result is None:
             logger.info(
                 (
-                    "⛔ Сейчас сигнала нет. "
-                    "Генератор не вернул "
-                    "подходящий сигнал."
-                )
+                    "Next SignalScanner analysis "
+                    "in %s seconds."
+                ),
+                interval,
             )
-        # =================================================
-        # LIST / TUPLE
-        # =================================================
-        elif isinstance(
-            result,
-            (list, tuple),
-        ):
-            if len(result) == 0:
-                logger.info(
-                    (
-                        "⛔ Сейчас сигнала нет. "
-                        "Список сигналов пуст."
+
+            # =================================================
+            # WAIT
+            # =================================================
+
+            try:
+
+                if stop_event is not None:
+
+                    try:
+                        await asyncio.wait_for(
+                            stop_event.wait(),
+                            timeout=interval,
+                        )
+
+                        logger.info(
+                            "SignalScanner stop event received."
+                        )
+
+                        break
+
+                    except asyncio.TimeoutError:
+                        pass
+
+                else:
+                    await asyncio.sleep(
+                        interval
                     )
-                )
-            else:
-                logger.info(
-                    "Signal generator returned %s signal(s).",
-                    len(result),
-                )
-        # =================================================
-        # SINGLE RESULT
-        # =================================================
-        else:
-            logger.info(
-                "Signal generator result: %s",
-                result,
+
+            except asyncio.CancelledError:
+                raise
+
+    finally:
+
+        # =====================================================
+        # DEACTIVATE
+        # =====================================================
+
+        try:
+            scanner._running = False
+
+        except Exception:
+            pass
+
+        logger.info(
+            "SignalScanner loop stopped."
+        )
+
+
+# =========================================================
+# LEGACY GENERATOR DISCOVERY
+# =========================================================
+
+
+def _load_legacy_generator(
+    market: MarketClient,
+) -> Any | None:
+    """
+    Старый fallback.
+
+    Используется только если SignalScanner
+    отсутствует или не может быть создан.
+
+    Ищет:
+
+        signal_generator.py
+        signal_engine.py
+        signal_analyzer.py
+        analyzer.py
+        ...
+
+    """
+
+    for module_name in GENERATOR_MODULES:
+
+        try:
+            module = importlib.import_module(
+                module_name
             )
-    except asyncio.CancelledError:
-        logger.info(
-            "Signal generation loop cancelled."
+
+        except ModuleNotFoundError:
+            continue
+
+        except Exception:
+            logger.exception(
+                (
+                    "Failed to import "
+                    "legacy signal module: %s"
+                ),
+                module_name,
+            )
+            continue
+
+        # =================================================
+        # FUNCTIONS
+        # =================================================
+
+        for function_name in GENERATOR_FUNCTIONS:
+
+            function = getattr(
+                module,
+                function_name,
+                None,
+            )
+
+            if not callable(function):
+                continue
+
+            logger.info(
+                (
+                    "Legacy signal generator found: "
+                    "%s.%s"
+                ),
+                module_name,
+                function_name,
+            )
+
+            return function
+
+        # =================================================
+        # SIGNAL GENERATOR CLASS
+        # =================================================
+
+        generator_class = getattr(
+            module,
+            "SignalGenerator",
+            None,
         )
-        raise
-    except Exception:
-        logger.exception(
-            "Signal generation error."
+
+        if generator_class is None:
+            continue
+
+        instance = None
+
+        try:
+            instance = generator_class(
+                market
+            )
+
+        except TypeError:
+
+            try:
+                instance = generator_class(
+                    market=market
+                )
+
+            except Exception:
+                logger.exception(
+                    (
+                        "Failed to initialize "
+                        "SignalGenerator from %s"
+                    ),
+                    module_name,
+                )
+
+        except Exception:
+            logger.exception(
+                (
+                    "Failed to initialize "
+                    "SignalGenerator from %s"
+                ),
+                module_name,
+            )
+
+        if instance is None:
+            continue
+
+        # =================================================
+        # generate()
+        # =================================================
+
+        generate = getattr(
+            instance,
+            "generate",
+            None,
         )
-    # =================================================
-    # DELAY
-    # =================================================
-    interval = _get_analysis_interval()
-    logger.info(
-        "Next signal analysis in %s seconds.",
-        interval,
-    )
-    try:
-        await asyncio.sleep(
-            interval
-        )
-    except asyncio.CancelledError:
-        logger.info(
-            "Signal generation sleep cancelled."
-        )
-        raise
 
-=========================================================
+        if callable(generate):
 
-SCHEDULER
+            logger.info(
+                (
+                    "Legacy SignalGenerator connected: "
+                    "%s.SignalGenerator.generate"
+                ),
+                module_name,
+            )
 
-=========================================================
+            return generate
 
-class Scheduler:
+        # =================================================
+        # OTHER METHODS
+        # =================================================
 
-def __init__(
-    self,
+        for method_name in GENERATOR_FUNCTIONS:
+
+            method = getattr(
+                instance,
+                method_name,
+                None,
+            )
+
+            if not callable(method):
+                continue
+
+            logger.info(
+                (
+                    "Legacy signal method found: "
+                    "%s.SignalGenerator.%s"
+                ),
+                module_name,
+                method_name,
+            )
+
+            return method
+
+    return None
+
+
+# =========================================================
+# LEGACY SIGNAL GENERATION LOOP
+# =========================================================
+
+
+async def _run_legacy_generator(
+    generator: Any,
     bot: Bot,
     market: MarketClient,
 ) -> None:
-    self.bot = bot
-    self.market = market
-    self.tasks: list[
-        asyncio.Task[Any]
-    ] = []
-# =====================================================
-# START
-# =====================================================
-async def start(
-    self,
-) -> None:
-    # =================================================
-    # PROTECTION FROM DOUBLE START
-    # =================================================
-    active_tasks = [
-        task
-        for task in self.tasks
-        if not task.done()
-    ]
-    if active_tasks:
-        logger.warning(
-            "Scheduler already started."
-        )
-        return
-    # =================================================
-    # CLEAR OLD TASKS
-    # =================================================
-    self.tasks.clear()
+    """
+    Старый режим генерации сигналов.
+
+    Нужен только для совместимости.
+    """
+
     logger.info(
-        "Starting scheduler..."
+        "Legacy signal generator mode started."
     )
-    # =================================================
-    # TASK 1
-    # SIGNAL GENERATION
-    # =================================================
-    generation_task = asyncio.create_task(
-        signal_generation_loop(
-            self.bot,
-            self.market,
-        ),
-        name="signal_generation",
-    )
-    # =================================================
-    # TASK 2
-    # SIGNAL WARNING
-    # =================================================
-    warning_task = asyncio.create_task(
-        warning_scheduler(
-            self.bot
-        ),
-        name="signal_warning",
-    )
-    # =================================================
-    # TASK 3
-    # RESULT CHECKER
-    # =================================================
-    result_task = asyncio.create_task(
-        result_checker_loop(
-            self.bot,
-            self.market,
-        ),
-        name="signal_result_checker",
-    )
-    # =================================================
-    # SAVE TASKS
-    # =================================================
-    self.tasks = [
-        generation_task,
-        warning_task,
-        result_task,
-    ]
-    logger.info(
-        "Scheduler started: %s tasks.",
-        len(self.tasks),
-    )
-    logger.info(
-        "Scheduler tasks:"
-    )
-    for task in self.tasks:
+
+    interval = _get_analysis_interval()
+
+    while True:
+
+        try:
+
+            logger.info(
+                "Starting legacy market signal analysis..."
+            )
+
+            result = await _call_generator(
+                generator,
+                bot,
+                market,
+            )
+
+            # =================================================
+            # RESULT
+            # =================================================
+
+            if result is None:
+
+                logger.info(
+                    (
+                        "⛔ Сейчас сигнала нет. "
+                        "Генератор не вернул "
+                        "подходящий сигнал."
+                    )
+                )
+
+            elif isinstance(
+                result,
+                (list, tuple),
+            ):
+
+                if not result:
+
+                    logger.info(
+                        (
+                            "⛔ Сейчас сигнала нет. "
+                            "Список сигналов пуст."
+                        )
+                    )
+
+                else:
+
+                    logger.info(
+                        (
+                            "Legacy signal generator "
+                            "returned %s signal(s)."
+                        ),
+                        len(result),
+                    )
+
+            else:
+
+                logger.info(
+                    "Legacy generator result: %s",
+                    result,
+                )
+
+        except asyncio.CancelledError:
+
+            logger.info(
+                "Legacy signal generation cancelled."
+            )
+
+            raise
+
+        except Exception:
+
+            logger.exception(
+                "Legacy signal generation error."
+            )
+
+        # =================================================
+        # INTERVAL
+        # =================================================
+
+        interval = _get_analysis_interval()
+
         logger.info(
-            " - %s",
-            task.get_name(),
+            (
+                "Next legacy signal analysis "
+                "in %s seconds."
+            ),
+            interval,
         )
-# =====================================================
-# STOP
-# =====================================================
-async def stop(
-    self,
+
+        try:
+
+            await asyncio.sleep(
+                interval
+            )
+
+        except asyncio.CancelledError:
+
+            logger.info(
+                "Legacy signal generation sleep cancelled."
+            )
+
+            raise
+
+
+# =========================================================
+# SIGNAL GENERATION LOOP
+# =========================================================
+
+
+async def signal_generation_loop(
+    bot: Bot,
+    market: MarketClient,
 ) -> None:
-    if not self.tasks:
-        return
+    """
+    Главный цикл генерации сигналов.
+
+    Приоритет:
+
+        1. Текущий SignalScanner
+        2. Старый SignalGenerator
+
+    То есть текущий signal_scanner.py является
+    основным источником сигналов.
+    """
+
     logger.info(
-        "Stopping scheduler..."
+        "================================================"
     )
-    # =================================================
-    # CANCEL TASKS
-    # =================================================
-    for task in self.tasks:
-        if not task.done():
-            task.cancel()
-    # =================================================
-    # WAIT
-    # =================================================
-    results = await asyncio.gather(
-        *self.tasks,
-        return_exceptions=True,
+
+    logger.info(
+        "SIGNAL GENERATION LOOP STARTED"
     )
-    # =================================================
-    # LOG ERRORS
-    # =================================================
-    for task, result in zip(
-        self.tasks,
-        results,
-    ):
-        if isinstance(
-            result,
-            Exception,
+
+    logger.info(
+        "================================================"
+    )
+
+    # =====================================================
+    # CURRENT SIGNAL SCANNER
+    # =====================================================
+
+    scanner = _create_signal_scanner(
+        market
+    )
+
+    if scanner is not None:
+
+        scan_once = getattr(
+            scanner,
+            "scan_once",
+            None,
+        )
+
+        if callable(scan_once):
+
+            logger.info(
+                "Current SignalScanner selected."
+            )
+
+            await _run_signal_scanner(
+                scanner
+            )
+
+            return
+
+        logger.warning(
+            (
+                "SignalScanner exists but "
+                "scan_once() is unavailable."
+            )
+        )
+
+    # =====================================================
+    # LEGACY FALLBACK
+    # =====================================================
+
+    logger.warning(
+        (
+            "Current SignalScanner unavailable. "
+            "Trying legacy signal generator."
+        )
+    )
+
+    generator = _load_legacy_generator(
+        market
+    )
+
+    if generator is None:
+
+        logger.error(
+            "================================================"
+        )
+
+        logger.error(
+            "NO SIGNAL GENERATOR FOUND."
+        )
+
+        logger.error(
+            "Scheduler cannot create signals."
+        )
+
+        logger.error(
+            "Expected:"
+        )
+
+        logger.error(
+            " - signal_scanner.py"
+        )
+
+        logger.error(
+            " - SignalScanner"
+        )
+
+        logger.error(
+            "================================================"
+        )
+
+        return
+
+    await _run_legacy_generator(
+        generator,
+        bot,
+        market,
+    )
+
+
+# =========================================================
+# SCHEDULER
+# =========================================================
+
+
+class Scheduler:
+    """
+    Главный scheduler проекта.
+
+    Запускает:
+
+        1. SignalScanner
+        2. Signal Warning Scheduler
+        3. Result Checker
+
+    """
+
+    def __init__(
+        self,
+        bot: Bot,
+        market: MarketClient,
+    ) -> None:
+
+        self.bot = bot
+
+        self.market = market
+
+        self.tasks: list[
+            asyncio.Task[Any]
+        ] = []
+
+        self._started = False
+
+    # =====================================================
+    # START
+    # =====================================================
+
+    async def start(
+        self,
+    ) -> None:
+
+        # =================================================
+        # DOUBLE START PROTECTION
+        # =================================================
+
+        active_tasks = [
+            task
+            for task in self.tasks
+            if not task.done()
+        ]
+
+        if active_tasks:
+
+            logger.warning(
+                "Scheduler already started."
+            )
+
+            self._started = True
+
+            return
+
+        # =================================================
+        # RESET
+        # =================================================
+
+        self.tasks.clear()
+
+        self._started = True
+
+        logger.info(
+            "================================================"
+        )
+
+        logger.info(
+            "STARTING TEYZUS SCHEDULER"
+        )
+
+        logger.info(
+            "================================================"
+        )
+
+        # =================================================
+        # TASK 1
+        # SIGNAL GENERATION
+        # =================================================
+
+        generation_task = asyncio.create_task(
+            signal_generation_loop(
+                self.bot,
+                self.market,
+            ),
+            name="signal_generation",
+        )
+
+        # =================================================
+        # TASK 2
+        # WARNING SCHEDULER
+        # =================================================
+
+        warning_task = asyncio.create_task(
+            warning_scheduler(
+                self.bot
+            ),
+            name="signal_warning",
+        )
+
+        # =================================================
+        # TASK 3
+        # RESULT CHECKER
+        # =================================================
+
+        result_task = asyncio.create_task(
+            result_checker_loop(
+                self.bot,
+                self.market,
+            ),
+            name="signal_result_checker",
+        )
+
+        # =================================================
+        # SAVE
+        # =================================================
+
+        self.tasks = [
+            generation_task,
+            warning_task,
+            result_task,
+        ]
+
+        logger.info(
+            "Scheduler started: %s tasks.",
+            len(self.tasks),
+        )
+
+        logger.info(
+            "Scheduler tasks:"
+        )
+
+        for task in self.tasks:
+
+            logger.info(
+                " - %s",
+                task.get_name(),
+            )
+
+    # =====================================================
+    # STOP
+    # =====================================================
+
+    async def stop(
+        self,
+    ) -> None:
+
+        if not self.tasks:
+
+            self._started = False
+
+            return
+
+        logger.info(
+            "================================================"
+        )
+
+        logger.info(
+            "STOPPING TEYZUS SCHEDULER"
+        )
+
+        logger.info(
+            "================================================"
+        )
+
+        # =================================================
+        # CANCEL
+        # =================================================
+
+        for task in self.tasks:
+
+            if not task.done():
+
+                task.cancel()
+
+        # =================================================
+        # WAIT
+        # =================================================
+
+        results = await asyncio.gather(
+            *self.tasks,
+            return_exceptions=True,
+        )
+
+        # =================================================
+        # LOG
+        # =================================================
+
+        for task, result in zip(
+            self.tasks,
+            results,
         ):
+
             if isinstance(
                 result,
-                asyncio.CancelledError,
+                BaseException,
             ):
-                continue
-            logger.debug(
-                (
-                    "Scheduler task %s "
-                    "stopped with: %s"
-                ),
-                task.get_name(),
-                result,
-            )
-    # =================================================
-    # CLEAR
-    # =================================================
-    self.tasks.clear()
-    logger.info(
-        "Scheduler stopped."
-    )
 
-=========================================================
+                if isinstance(
+                    result,
+                    asyncio.CancelledError,
+                ):
+                    continue
 
-PUBLIC API
+                logger.error(
+                    (
+                        "Scheduler task %s "
+                        "stopped with error: %s"
+                    ),
+                    task.get_name(),
+                    result,
+                )
 
-=========================================================
+        # =================================================
+        # CLEAR
+        # =================================================
 
-all = [
-“Scheduler”,
-“signal_generation_loop”,
+        self.tasks.clear()
+
+        self._started = False
+
+        logger.info(
+            "Scheduler stopped."
+        )
+
+    # =====================================================
+    # RUNNING
+    # =====================================================
+
+    @property
+    def running(self) -> bool:
+        return any(
+            not task.done()
+            for task in self.tasks
+        )
+
+
+# =========================================================
+# PUBLIC API
+# =========================================================
+
+
+__all__ = [
+    "Scheduler",
+    "signal_generation_loop",
 ]
