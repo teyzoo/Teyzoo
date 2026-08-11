@@ -2,9 +2,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 from aiogram import Bot
-from config import (
-    SIGNAL_EXPIRY_MINUTES,
-)
+from config import SIGNAL_EXPIRY_MINUTES
 from database import (
     get_pending_signals,
     save_signal,
@@ -12,12 +10,8 @@ from database import (
 from market import MarketClient
 from pair_selector import PairSelector
 from quality_filter import quality_filter
-from signal_notifications import (
-    send_signal,
-)
-from signal_policy import (
-    signal_policy,
-)
+from signal_notifications import send_signal
+from signal_policy import signal_policy
 from time_utils import (
     format_moscow_time,
     now_moscow,
@@ -36,14 +30,18 @@ class SignalGenerator:
             market=market,
             quality_filter=quality_filter,
         )
-    async def has_pending_signal(self) -> bool:
+    async def has_pending_signal(
+        self,
+    ) -> bool:
         signals = await get_pending_signals()
         return bool(signals)
     async def generate(
         self,
         bot: Bot,
     ) -> int | None:
-        existing = await self.has_pending_signal()
+        existing = (
+            await self.has_pending_signal()
+        )
         if existing:
             logger.info(
                 "Pending signal already exists. "
@@ -76,10 +74,12 @@ class SignalGenerator:
                 policy.reason,
             )
             return None
-        candles = await self.market.get_candles(
-            symbol=analysis.symbol,
-            timeframe="1m",
-            limit=50,
+        candles = (
+            await self.market.get_candles(
+                symbol=analysis.symbol,
+                timeframe="1m",
+                limit=50,
+            )
         )
         if not candles:
             logger.info(
@@ -131,4 +131,6 @@ class SignalGenerator:
         signal_id: int,
     ):
         from database import get_signal
-        return await get_signal(signal_id)
+        return await get_signal(
+            signal_id
+        )
