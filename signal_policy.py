@@ -33,11 +33,18 @@ class SignalPolicy:
         require_historical_probability: bool = (
             SIGNAL_REQUIRE_HISTORICAL_PROBABILITY
         ),
-    ):
+    ) -> None:
         self.calibrator = calibrator
-        self.minimum_quality = minimum_quality
-        self.minimum_probability = minimum_probability
-        self.require_historical_probability = (
+
+        self.minimum_quality = float(
+            minimum_quality
+        )
+
+        self.minimum_probability = float(
+            minimum_probability
+        )
+
+        self.require_historical_probability = bool(
             require_historical_probability
         )
 
@@ -45,10 +52,12 @@ class SignalPolicy:
         self,
         quality_score: float,
     ) -> SignalPolicyResult:
-
         quality_score = max(
             0.0,
-            min(100.0, quality_score),
+            min(
+                100.0,
+                float(quality_score),
+            ),
         )
 
         if quality_score < self.minimum_quality:
@@ -69,13 +78,12 @@ class SignalPolicy:
         )
 
         if probability is None:
-
             if self.require_historical_probability:
                 return SignalPolicyResult(
                     allowed=False,
                     reason=(
                         "Недостаточно исторических "
-                        "данных."
+                        "данных для подтверждения."
                     ),
                     quality_score=quality_score,
                     historical_probability=None,
@@ -84,9 +92,9 @@ class SignalPolicy:
             return SignalPolicyResult(
                 allowed=True,
                 reason=(
-                    "Signal passed by Quality Score. "
-                    "Historical probability is not "
-                    "available yet."
+                    "Quality Score прошёл. "
+                    "Исторической статистики пока "
+                    "недостаточно."
                 ),
                 quality_score=quality_score,
                 historical_probability=None,
@@ -114,3 +122,10 @@ class SignalPolicy:
 signal_policy = SignalPolicy(
     calibrator=probability_calibrator
 )
+
+
+__all__ = [
+    "SignalPolicyResult",
+    "SignalPolicy",
+    "signal_policy",
+]
