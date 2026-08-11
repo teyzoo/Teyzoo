@@ -20,12 +20,6 @@ logger = logging.getLogger(
 
 
 def create_market_provider() -> MarketProvider:
-    """
-    Создаёт HTTP-провайдер рыночных данных.
-
-    Все настройки берутся из config.py.
-    """
-
     if not MARKET_API_URL:
         raise RuntimeError(
             "MARKET_API_URL не задан."
@@ -43,10 +37,6 @@ def create_market_provider() -> MarketProvider:
 
 
 def create_market_client() -> MarketClient:
-    """
-    Создаёт MarketClient с HTTP-провайдером.
-    """
-
     provider = create_market_provider()
 
     client = MarketClient(
@@ -58,3 +48,9 @@ def create_market_client() -> MarketClient:
     )
 
     return client
+
+
+__all__ = [
+    "create_market_provider",
+    "create_market_client",
+]
