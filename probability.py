@@ -8,61 +8,51 @@ class ProbabilityBucket:
     minimum_score: float
     maximum_score: float
 
-    total: int
-    wins: int
+    total: int = 0
+    wins: int = 0
 
-    probability: float
+    probability: float = 0.0
 
 
 class ProbabilityCalibrator:
+    """
+    Историческая калибровка качества сигнала.
 
-    def __init__(self) -> None:
+    ВАЖНО:
+
+    probability != prediction.
+
+    Это фактический исторический WINRATE
+    для диапазона score.
+
+    Пока накоплено мало данных,
+    get_probability() возвращает None.
+    """
+
+    def __init__(
+        self,
+        minimum_samples: int = 100,
+    ) -> None:
+        self.minimum_samples = max(
+            1,
+            int(minimum_samples),
+        )
 
         self.buckets = [
-            ProbabilityBucket(
-                minimum_score=50,
-                maximum_score=60,
-                total=0,
-                wins=0,
-                probability=0.0,
-            ),
-            ProbabilityBucket(
-                minimum_score=60,
-                maximum_score=70,
-                total=0,
-                wins=0,
-                probability=0.0,
-            ),
-            ProbabilityBucket(
-                minimum_score=70,
-                maximum_score=80,
-                total=0,
-                wins=0,
-                probability=0.0,
-            ),
-            ProbabilityBucket(
-                minimum_score=80,
-                maximum_score=90,
-                total=0,
-                wins=0,
-                probability=0.0,
-            ),
-            ProbabilityBucket(
-                minimum_score=90,
-                maximum_score=101,
-                total=0,
-                wins=0,
-                probability=0.0,
-            ),
+            ProbabilityBucket(50, 60),
+            ProbabilityBucket(60, 70),
+            ProbabilityBucket(70, 80),
+            ProbabilityBucket(80, 90),
+            ProbabilityBucket(90, 101),
         ]
 
     def _find_bucket(
         self,
         score: float,
     ) -> ProbabilityBucket | None:
+        score = float(score)
 
         for bucket in self.buckets:
-
             if (
                 bucket.minimum_score
                 <= score
@@ -77,7 +67,6 @@ class ProbabilityCalibrator:
         score: float,
         won: bool,
     ) -> None:
-
         bucket = self._find_bucket(
             score
         )
@@ -93,15 +82,14 @@ class ProbabilityCalibrator:
         bucket.probability = (
             bucket.wins
             / bucket.total
-            * 100
+            * 100.0
         )
 
     def get_probability(
         self,
         score: float,
-        minimum_samples: int = 100,
+        minimum_samples: int | None = None,
     ) -> float | None:
-
         bucket = self._find_bucket(
             score
         )
@@ -109,7 +97,16 @@ class ProbabilityCalibrator:
         if bucket is None:
             return None
 
-        if bucket.total < minimum_samples:
+        required = (
+            self.minimum_samples
+            if minimum_samples is None
+            else max(
+                1,
+                int(minimum_samples),
+            )
+        )
+
+        if bucket.total < required:
             return None
 
         return bucket.probability
@@ -117,22 +114,19 @@ class ProbabilityCalibrator:
     def get_statistics(
         self,
     ) -> list[ProbabilityBucket]:
-
         return [
             ProbabilityBucket(
-                minimum_score=bucket.minimum_score,
-                maximum_score=bucket.maximum_score,
-                total=bucket.total,
-                wins=bucket.wins,
-                probability=bucket.probability,
+                minimum_score=b.minimum_score,
+                maximum_score=b.maximum_score,
+                total=b.total,
+                wins=b.wins,
+                probability=b.probability,
             )
-            for bucket in self.buckets
+            for b in self.buckets
         ]
 
     def clear(self) -> None:
-
         for bucket in self.buckets:
-
             bucket.total = 0
             bucket.wins = 0
             bucket.probability = 0.0
@@ -141,3 +135,10 @@ class ProbabilityCalibrator:
 probability_calibrator = (
     ProbabilityCalibrator()
 )
+
+
+__all__ = [
+    "ProbabilityBucket",
+    "ProbabilityCalibrator",
+    "probability_calibrator",
+]
