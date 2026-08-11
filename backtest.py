@@ -18,10 +18,21 @@ class BacktestResult:
 def run_backtest(
     candles: list[Candle],
     lookback: int = 100,
+    expiry_candles: int = 1,
 ) -> BacktestResult:
+    lookback = max(
+        20,
+        int(lookback),
+    )
 
-    if len(candles) <= lookback + 1:
+    expiry_candles = max(
+        1,
+        int(expiry_candles),
+    )
 
+    if len(candles) <= (
+        lookback + expiry_candles
+    ):
         return BacktestResult(
             total=0,
             wins=0,
@@ -34,56 +45,58 @@ def run_backtest(
     losses = 0
     skipped = 0
 
+    last_index = (
+        len(candles)
+        - expiry_candles
+    )
+
     for index in range(
         lookback,
-        len(candles) - 1,
+        last_index,
     ):
-
         history = candles[
             : index + 1
         ]
 
-        analysis = (
-            signal_engine.analyze(
-                history
-            )
+        analysis = signal_engine.analyze(
+            history
         )
 
         if analysis.direction is None:
-
             skipped += 1
             continue
 
-        entry = candles[
-            index
-        ].close
+        entry = float(
+            candles[index].close
+        )
 
-        exit_price = candles[
-            index + 1
-        ].close
+        exit_price = float(
+            candles[
+                index + expiry_candles
+            ].close
+        )
 
         if analysis.direction.value == "UP":
-
             if exit_price > entry:
                 wins += 1
             else:
                 losses += 1
 
         elif analysis.direction.value == "DOWN":
-
             if exit_price < entry:
                 wins += 1
             else:
                 losses += 1
 
         else:
-
             skipped += 1
 
-    total = wins + losses
+    total = (
+        wins + losses
+    )
 
     winrate = (
-        wins / total * 100
+        wins / total * 100.0
         if total
         else 0.0
     )
@@ -95,3 +108,9 @@ def run_backtest(
         winrate=winrate,
         skipped=skipped,
     )
+
+
+__all__ = [
+    "BacktestResult",
+    "run_backtest",
+]
