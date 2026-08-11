@@ -5,9 +5,7 @@ import logging
 
 from aiogram import Bot
 
-from database import (
-    get_pending_signals,
-)
+from database import get_pending_signals
 from market import MarketClient
 from signal_result_checker import (
     SignalResultChecker,
@@ -26,70 +24,61 @@ async def check_results_once(
     bot: Bot,
     market: MarketClient,
 ) -> int:
+    """
+    Один проход проверки результатов.
+    """
 
     checker = SignalResultChecker(
         market
     )
 
-    pending_before = (
-        await get_pending_signals()
-    )
+    results = await checker.check_once()
 
-    pending_ids = {
-        signal.id
-        for signal in pending_before
-    }
+    resolved = 0
 
-    await checker.check_once()
-
-    pending_after = (
-        await get_pending_signals()
-    )
-
-    pending_after_ids = {
-        signal.id
-        for signal in pending_after
-    }
-
-    resolved_ids = (
-        pending_ids
-        - pending_after_ids
-    )
-
-    for signal_id in resolved_ids:
-
+    for result in results:
         try:
-
             await handle_signal_result(
-                bot,
-                signal_id,
+                bot=bot,
+                signal_id=result.signal_id,
             )
+            resolved += 1
 
         except Exception:
-
             logger.exception(
                 "Could not send result "
                 "for signal #%s.",
-                signal_id,
+                result.signal_id,
             )
 
-    return len(resolved_ids)
+    return resolved
 
 
 async def result_checker_loop(
     bot: Bot,
     market: MarketClient,
     interval: int = 15,
+    stop_event: asyncio.Event | None = None,
 ) -> None:
+    """
+    Постоянный цикл проверки.
+
+    Если stop_event передан, цикл корректно
+    завершится через него.
+    """
+
+    interval = max(
+        5,
+        int(interval),
+    )
 
     logger.info(
-        "Result checker started."
+        "Result checker loop started | interval=%ss",
+        interval,
     )
 
     while True:
-
         try:
-
             await check_results_once(
                 bot=bot,
                 market=market,
@@ -99,11 +88,43 @@ async def result_checker_loop(
             raise
 
         except Exception:
-
             logger.exception(
-                "Result checker error."
+                "Result checker cycle failed."
             )
 
-        await asyncio.sleep(
-            interval
-        )
+        if stop_event is None:
+            await asyncio.sleep(
+                interval
+            )
+            continue
+
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(),
+                timeout=interval,
+            )
+            break
+
+        except asyncio.TimeoutError:
+            continue
+
+    logger.info(
+        "Result checker loop stopped."
+    )
+
+
+async def pending_count() -> int:
+    """
+    Удобный helper для админки/статистики.
+    """
+
+    signals = await get_pending_signals()
+
+    return len(signals)
+
+
+__all__ = [
+    "check_results_once",
+    "result_checker_loop",
+    "pending_count",
+]
