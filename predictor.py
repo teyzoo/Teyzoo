@@ -1,9 +1,11 @@
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from market import Candle
 from models import Direction
+
 from signal_engine import (
     AnalysisResult,
     signal_engine,
@@ -24,9 +26,10 @@ class Predictor:
         self,
         candles: list[Candle],
     ) -> Prediction:
-
         result: AnalysisResult = (
-            signal_engine.analyze(candles)
+            signal_engine.analyze(
+                candles
+            )
         )
 
         if result.direction is None:
@@ -34,23 +37,34 @@ class Predictor:
                 direction=None,
                 score=0.0,
                 confidence=0.0,
-                reasons=result.reasons,
+                reasons=list(
+                    result.reasons
+                ),
             )
 
         confidence = max(
             0.0,
             min(
                 100.0,
-                result.score,
+                float(result.score),
             ),
         )
 
         return Prediction(
             direction=result.direction,
-            score=result.score,
+            score=float(result.score),
             confidence=confidence,
-            reasons=result.reasons,
+            reasons=list(
+                result.reasons
+            ),
         )
 
 
 predictor = Predictor()
+
+
+__all__ = [
+    "Prediction",
+    "Predictor",
+    "predictor",
+]
